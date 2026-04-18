@@ -666,15 +666,23 @@ On each invocation the CLI:
 
 A `tpctl daemon` subcommand is also provided for users who want to start, supervise, or debug the controller explicitly. It has the same effect as auto-spawn but runs in the foreground.
 
-### 11.4 Socket location
+### 11.4 tmux server identity and socket location
 
-Controller sockets live under a well-known per-user runtime path, for example:
+The canonical identity of a tmux server is its **resolved socket path** (what tmux itself uses to key a server). This is resolved in the following precedence order:
+
+1. an explicit `--tmux-socket PATH` or `--tmux-socket-name NAME` flag on the `tpctl` invocation (mirroring tmux's `-S` and `-L`)
+2. the `$TMUX` environment variable, if set, by extracting the socket path from its leading component
+3. the tmux default socket path (typically `/tmp/tmux-$UID/default`)
+
+Passing both `--tmux-socket` and `--tmux-socket-name` in the same invocation is a command-level error — they are alternative ways to identify the same server.
+
+The controller socket path is derived by hashing the resolved tmux socket path and placing it under the per-user runtime directory:
 
 ```text
-$XDG_RUNTIME_DIR/tpctl/
+$XDG_RUNTIME_DIR/tpctl/<hash-of-resolved-tmux-socket-path>.sock
 ```
 
-The socket name is derived from the target tmux server identity so that distinct tmux servers get distinct controllers.
+Hashing is used to keep the path short, filesystem-safe, and stable across custom tmux socket paths. Distinct tmux servers therefore get distinct controllers automatically, and `tpctl` can target multiple tmux servers from the same user session via the flags above.
 
 ### 11.5 Startup race
 
