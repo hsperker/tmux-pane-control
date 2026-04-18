@@ -59,9 +59,15 @@ func (c *Controller) Start(ctx context.Context) error {
 
 // drain copies subscription events into the store. It exits when the
 // subscription channel closes (on ctx cancellation or adapter teardown).
+// Closed events cause Forget so pending waits see the pane destruction
+// per spec §11.9.
 func (c *Controller) drain(ch <-chan tmuxctl.PaneOutput) {
 	defer close(c.done)
 	for ev := range ch {
+		if ev.Closed {
+			c.store.Forget(ev.ID)
+			continue
+		}
 		c.store.Append(ev.ID, ev.Data)
 	}
 }

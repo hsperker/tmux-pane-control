@@ -87,6 +87,13 @@ func (s *subscription) sync(ctx context.Context) {
 		if _, ok := seen[p]; !ok {
 			t.stop(s.adapter)
 			delete(s.trackers, p)
+			// Publish the closure so listeners (Controller → Store
+			// → waiters) can react per spec §11.9.
+			select {
+			case s.out <- PaneOutput{ID: p, Closed: true}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
 }
