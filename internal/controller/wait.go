@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -28,8 +29,9 @@ type WaitRequest struct {
 	After         domain.Token
 	Timeout       time.Duration
 	Mode          WaitMode
-	SentinelToken string        // sentinel: required
-	QuietWindow   time.Duration // quiescence: required
+	SentinelToken string         // sentinel: required
+	QuietWindow   time.Duration  // quiescence: required
+	Regex         *regexp.Regexp // regex: required
 }
 
 // Wait implements `tpctl wait` (spec §9.6).
@@ -68,6 +70,14 @@ func Wait(ctx context.Context, st *store.Store, req WaitRequest) (*domain.WaitRe
 				PaneID:  string(req.PaneID),
 				Code:    domain.ErrInvalidArgs,
 				Message: "quiescence mode requires a positive --ms",
+			}
+		}
+	case WaitModeRegex:
+		if req.Regex == nil {
+			return nil, &domain.ErrorResponse{
+				PaneID:  string(req.PaneID),
+				Code:    domain.ErrInvalidArgs,
+				Message: "regex mode requires a compiled --pattern",
 			}
 		}
 	default:
@@ -109,6 +119,16 @@ func Wait(ctx context.Context, st *store.Store, req WaitRequest) (*domain.WaitRe
 					Result:   domain.WaitSentinel,
 					Matched:  domain.NewString(m.Matched),
 					ExitCode: domain.NewInt(m.ExitCode),
+				}, nil
+			}
+		case WaitModeRegex:
+			stripped := textnorm.StripANSI(string(bytes))
+			if m, ok := waiter.MatchRegex([]byte(stripped), req.Regex); ok {
+				return &domain.WaitResponse{
+					PaneID:  req.PaneID,
+					Next:    next,
+					Result:  domain.WaitRegex,
+					Matched: domain.NewString(m.Matched),
 				}, nil
 			}
 		case WaitModeQuiescence:
