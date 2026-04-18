@@ -368,6 +368,12 @@ Sends literal text to a pane.
 - prints nothing
 - exits `0`
 
+### Ordering guarantee
+
+`text` returns only after the controller has received tmux's acknowledgement that the send command was processed. This is an acknowledgement of tmux command processing — **not** proof that the target program has already reacted to the input.
+
+Combined with `wait`'s semantics in §9.6, this gives the race-free `snapshot → text → wait` pattern.
+
 ### Failure example
 
 ```json
@@ -404,6 +410,10 @@ tpctl key --pane %42 Escape ":" "q" Enter
 - prints nothing
 - exits `0`
 
+### Ordering guarantee
+
+`key` returns only after the controller has received tmux's acknowledgement that the send command was processed. The same caveat as §9.4 applies: this is not proof that the target program has reacted.
+
 ---
 
 ## 9.6 `wait`
@@ -439,11 +449,13 @@ tpctl wait --pane %42 --after TOKEN --for quiescence --ms 250 --timeout-ms 5000
 
 ### Semantics
 
-- `wait` matches **future output only**, relative to the supplied checkpoint token
+- `wait` matches against **all retained output after the checkpoint token**, including output that was already buffered by the controller at the moment `wait` was registered, as well as output that arrives later
 - it does **not** match already-visible or already-buffered text that predates the checkpoint
 - success always returns `next`
 - success always returns `result`
 - `matched` is returned only when relevant
+
+Together with the send-ack guarantee of `text` and `key` (§9.4, §9.5), this makes the `snapshot → text → wait` pattern race-free: fast output produced between the send and the `wait` registration is not missed, because `wait` scans the retained stream from the token forward.
 
 ### Success example: sentinel
 
