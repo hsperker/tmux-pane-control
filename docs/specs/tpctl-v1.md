@@ -205,6 +205,12 @@ Rule of thumb:
 - canonical cases **must** use the canonical names above
 - non-canonical failures **may** use implementation-defined codes
 
+### 7.6 Error payload shape
+
+- `code` and `message` are always present on command-level failures
+- `pane_id` is present when the command targeted a specific pane **and** that pane was identified
+- `pane_id` is omitted when the command is not pane-scoped (e.g. `list`), when pane resolution failed before a specific pane identity was established, or when the error concerns global arguments or controller/server selection
+
 ---
 
 ## 8. JSON response design
@@ -216,8 +222,9 @@ Rule of thumb:
 - no `op` field
 - no `schema` field
 - no redundant wrappers such as `data`
-- omit absent fields
+- omit fields that are **not applicable** to the command result; fields that are part of the command's primary payload remain present even when empty (e.g. `panes: []`, `text: ""`, or `scrollback_text: ""` when history was explicitly requested)
 - use short but readable field names
+- checkpoint tokens (`next`, `--after`) are always JSON strings; they are opaque and must not be parsed by callers
 
 ### 8.2 Field naming
 
@@ -270,6 +277,7 @@ Returns pane IDs only.
 
 ### Notes
 
+- `panes` is always present, even when the list is empty (`{"panes": []}`)
 - no additional metadata in v1
 - no human-readable location data in v1
 
@@ -297,6 +305,11 @@ When history is requested:
 
 - `scrollback_text` = prior out-of-view lines included from scrollback
 - `text` = current visible screen
+
+### Field presence
+
+- `text` is always present; if the pane is empty, `text: ""`
+- `scrollback_text` is present **iff** `--history-lines` was supplied; when requested, it is always present, even as `scrollback_text: ""` if no scrollback was available
 
 ### Success example (no history)
 
