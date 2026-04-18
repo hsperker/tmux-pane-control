@@ -117,3 +117,79 @@ green test suite.
    slice fails its check, the plan has drifted — fix the plan (or the
    code) before starting new work.
 4. Cut a `slice-NN-<short-name>` branch and proceed.
+
+## Retrospective: what a first end-to-end implementation taught us
+
+A complete end-to-end implementation of v1 was built out on a
+separate branch, walking through the 17 slices in order. That work
+surfaced fifteen spec-refinement opportunities — a mix of normative
+tightenings, clarifications, and one implementation note. The full
+list and resulting spec changes are captured in the PR that updated
+`docs/specs/tpctl-v1.md`; the highest-impact ones:
+
+- **§7.5 precedence was ambiguous and the implementation got it
+  wrong.** The "prefer PANE_NOT_FOUND over INVALID_AFTER" phrasing let
+  the validation checks run in the wrong order; only an acceptance-
+  suite audit caught it. The spec now mandates a concrete dispatch
+  ordering: pane-existence validation precedes token-to-pane
+  validation.
+- **§9.6 match-input CR handling was unspecified.** Regex users
+  writing `(?m)^ready$` against `"ready\r\n"` silently miss matches
+  because `\r` sits between the content and the `\n` anchor. The spec
+  now requires `\r` stripping before match.
+- **§14 accidentally prescribed control mode.** A simpler
+  `pipe-pane` + `list-panes` poll adapter also satisfies the
+  observable contract. §14's normative bullet no longer names a
+  specific mechanism; a non-normative note enumerates the trade-offs.
+- **§11.2 didn't require daemon lifetime decoupling.** Auto-spawn
+  works in an interactive shell but fails under agent harnesses that
+  reap process trees; the spec now mandates lifetime decoupling with
+  `setsid`-style detachment as the Unix example.
+- **§11.9 restart semantics were too permissive.** "May exit or
+  reconnect" left observable behavior undefined in reconnect mode;
+  the spec now requires an atomic reset of tmux-derived state and
+  explicit failure of pending waits as runtime errors (not
+  `PANE_CLOSED`, not `TIMEOUT`).
+
+## Known implementation deviations from the tightened spec
+
+Some spec tightenings have not yet been reflected in the
+implementation on its branch. These are tracked as follow-up work:
+
+- **§9.6 CR handling.** The wait handler needs `\r` stripping before
+  the matcher runs. Small change in `internal/controller/wait.go`.
+- **§11.9 tmux server restart.** The controller does not currently
+  detect tmux connection loss; pre-restart tokens remain "valid"
+  after a tmux restart. Needs either exit-on-failure or
+  atomic-state-reset reconnect.
+- **§11.2 daemon lifetime.** Verify the spawned daemon survives the
+  CLI being killed by a process-tree reaper. The current
+  `setsid`-based detachment is likely sufficient, but a regression
+  test under simulated SIGHUP would pin it.
+
+## Lessons learned
+
+- **Audit the acceptance suite aggressively.** The §7.5 precedence
+  bug shipped through every earlier slice; only the post-slice-17
+  audit caught it. Write the acceptance suite last but treat the
+  audit as a first-class step, not a rubber stamp.
+- **Pure functions for normalization paid off.** The `textnorm`
+  package's hand-rolled ANSI state machine had a single bug (charset
+  designators were miscounted as two-byte) caught by one golden
+  test. Having the normalizer as a standalone package with
+  table-driven tests made extension trivial.
+- **Go's `flag` package doesn't do interleaved parsing.** Every
+  pane-taking command needed a small `reorderArgs` helper because
+  the spec's own examples interleave flags and positionals. Worth
+  building into the scaffold from slice 1 of any future Go-based
+  implementation; the spec now mandates interleaving in §6.1.
+- **The single-writer controller loop was the right abstraction.**
+  Serializing all pane mutations through one goroutine avoided a
+  whole class of data-race tests. The hexagonal split made the fake
+  tmux adapter trivial to write, which in turn made controller-level
+  component tests fast and deterministic.
+- **`pipe-pane` + poll is a valid alternative to control mode.**
+  Control mode is richer but its frame grammar and subscription
+  semantics are non-trivial. The polling-with-pipe-pane approach
+  traded sub-millisecond latency for a much smaller adapter surface
+  and satisfied every observable requirement in §4, §9.6, and §11.9.

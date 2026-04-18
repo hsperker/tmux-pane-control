@@ -78,6 +78,7 @@ Checkpoint tokens are:
 - **pane-scoped** — a token issued for `%42` is not valid for any other pane
 - **controller-lifetime scoped** — a token is invalidated when the controller process restarts
 - **bounded by retained stream state** — a token may become invalid if the controller has discarded the referenced portion of the output stream
+- **carry enough state for quiescence** — for any still-valid token, implementations must be able to recover the checkpoint reference time used by §9.6 quiescence. This may be encoded in the token itself or stored in controller-side state associated with that token.
 
 A token remains valid until one of the following occurs:
 
@@ -142,6 +143,26 @@ Commands intentionally omitted from v1:
 
 These may be added later if needed, but are not part of the minimal v1 contract.
 
+### 6.1 Argument parsing
+
+Implementations must accept flags and positional arguments in interleaved order. A flag appearing after a positional argument must still be parsed as a flag, and a positional argument appearing between flags must still be delivered to the command handler. The `--` sentinel ends flag parsing; every argument after `--` is treated as positional, even if it begins with `-`.
+
+The following invocations are all equivalent (all pass `"hello"` as the text payload and the `Enter` flag):
+
+```bash
+tpctl text --pane %42 "hello" --enter
+tpctl text --pane %42 --enter "hello"
+```
+
+The `--` sentinel lets callers pass literal payloads or key tokens that would otherwise be parsed as flags:
+
+```bash
+tpctl text --pane %42 -- "--starts-with-dashes"
+tpctl key  --pane %42 -- -l
+```
+
+In the `key` example, `-l` is sent as a literal key token to tmux; it is not parsed as a CLI flag.
+
 ---
 
 ## 7. Output and error conventions
@@ -201,7 +222,9 @@ When multiple canonical conditions could apply, use this order:
 
 1. a pending `wait` observes its pane being destroyed → `PANE_CLOSED`
 2. a command is dispatched for a pane that no longer exists → `PANE_NOT_FOUND`
-3. a token is invalid **and** the pane lookup already fails → prefer `PANE_NOT_FOUND` over `INVALID_AFTER`
+3. Pane-existence validation must run before token-to-pane validation. If the target pane does not exist at dispatch time, the command fails with `PANE_NOT_FOUND`, even if the supplied token is malformed, expired, controller-instance-mismatched, or references a different pane.
+
+Note: CLI argument parsing (including detection of a missing required `--after`, which surfaces as `MISSING_AFTER`) precedes pane-existence validation. `MISSING_AFTER` is therefore always reported before any pane lookup is attempted.
 
 Implementations **may** emit additional error codes for other command-level failures (for example, regex compile failure, invalid argument combinations, controller unavailable, pane closed mid-operation), but must preserve the standard JSON error shape defined in §7.2 and §8.
 
@@ -316,6 +339,7 @@ Rules:
 - default when omitted: no history; `scrollback_text` is not included
 - `N = 0` is valid and means "history mode requested, zero lines"; `scrollback_text: ""` is included
 - v1 does not impose a spec-level maximum on `N`; implementations may cap it, and tmux's own scrollback buffer is the practical ceiling
+- if the pane's retained scrollback is shorter than the requested `N` lines, `scrollback_text` contains all available scrollback and the response still succeeds. Implementations must not pad missing lines with blanks and must not treat short scrollback as an error.
 
 ### Field presence
 
@@ -471,6 +495,10 @@ tpctl key --pane %42 Escape ":" "q" Enter
 
 `tpctl key` uses tmux's `send-keys` key vocabulary. The full table of accepted key names and modifier forms (e.g. `Enter`, `Escape`, `Tab`, `BSpace`, arrow keys, `F1`–`F12`, `C-<x>`, `M-<x>`, `S-<x>`) is defined by `tmux(1)`. The spec does not duplicate that table.
 
+### Validation scope
+
+`tpctl key` delegates key-token interpretation to tmux's `send-keys` behavior and does not maintain an exhaustive token whitelist. As a result, whether a token is rejected is tmux-version-dependent; modern tmux versions may accept unknown names permissively, for example by treating them as literal character sequences rather than producing an error. When tmux rejects a token sequence, implementations must surface that as a structured command-level error. When tmux accepts a token sequence, `tpctl key` succeeds and no validation error is raised.
+
 ### Token handling rules
 
 - each CLI argument after `--pane` is one key token
@@ -522,7 +550,12 @@ Waits on output **after an explicit checkpoint token**.
 
 ### Match input
 
-All match modes operate on the **ANSI-stripped post-checkpoint output stream**, treated as one continuous text buffer including newlines. Control sequences (CSI, OSC, etc.) are removed before matching.
+All wait match modes operate on the post-checkpoint output stream after the following transformations are applied, in order:
+
+1. ANSI / ESC-introduced control sequences are removed.
+2. Carriage returns are removed: `\r\n` is normalized to `\n`, and stray `\r` is dropped.
+
+Newlines (`\n`) are preserved. Match input is treated as one continuous text buffer including newlines. Text-field normalizations such as trailing-whitespace trimming and trailing-blank-line trimming do **not** apply to match input; those apply only to JSON text fields such as `snapshot.text`, `snapshot.scrollback_text`, and `read.text`.
 
 This is not full terminal emulation. For rich TUIs, use `--for quiescence` followed by `snapshot`.
 
@@ -592,7 +625,7 @@ In words:
 - if output has appeared after the checkpoint, the quiet window is measured from the most recent output byte
 - if the pane is already quiet for at least `--ms` when the wait is registered, the wait succeeds immediately
 
-On success, quiescence returns only `result: "quiescence"` and `next`. It does not return `matched`. The returned `next` corresponds to the stream position at the moment quiescence is declared satisfied, so a follow-up `read --after <next>` is guaranteed to see only strictly later output.
+On success, quiescence returns only `result: "quiescence"` and `next`. It does not return `matched`. The general `next` guarantee in the Semantics subsection below applies.
 
 ### Semantics
 
@@ -600,7 +633,28 @@ On success, quiescence returns only `result: "quiescence"` and `next`. It does n
 - it does **not** match already-visible or already-buffered text that predates the checkpoint
 - success always returns `next`
 - success always returns `result`
-- `matched` is returned only when relevant
+
+#### Field presence on success
+
+On success, `wait` always includes `pane_id`, `next`, and `result`. Additional fields are mode-specific and are omitted entirely when not applicable.
+
+- sentinel
+    - `matched`: present; full matched sentinel literal `__DONE__:<token>:<exit-code>`
+    - `exit_code`: present; integer
+- regex
+    - `matched`: present; whole match (group 0 equivalent)
+    - `exit_code`: absent
+- quiescence
+    - `matched`: absent
+    - `exit_code`: absent
+
+Fields marked absent are omitted from the JSON output entirely, not emitted as `null`.
+
+#### `next` on success
+
+On success, `wait` returns a `next` token that corresponds to the controller's current observed stream head at the evaluation step that satisfied the wait condition. A follow-up `read --after <next>` is guaranteed to return only output appended strictly later than that stream position.
+
+`next` is not defined as the byte immediately following a regex or sentinel match. Implementations may return a stream position that includes additional output observed in the same evaluation step. Callers must not derive "post-match tail" semantics from `next`; callers that need exact post-match interpretation must use `matched` and their own parsing.
 
 Together with the send-ack guarantee of `text` and `key` (§9.4, §9.5), this makes the `snapshot → text → wait` pattern race-free: fast output produced between the send and the `wait` registration is not missed, because `wait` scans the retained stream from the token forward.
 
@@ -699,6 +753,12 @@ On each invocation the CLI:
 4. if no controller is running, starts one automatically
 5. reconnects and proceeds with the command
 
+#### Daemon lifetime
+
+An auto-spawned controller must outlive the CLI invocation that spawned it. Implementations must decouple the controller process lifetime from the spawning CLI so that the controller is not terminated merely because the CLI exits, loses its controlling terminal, or is reaped as part of the CLI's process tree by an automation harness. On Unix, this typically means starting the controller in a new session/process group and closing or redirecting inherited standard streams and any controlling terminal handles. A controller that is expected to persist but is routinely terminated when its spawning CLI exits is not conforming.
+
+The same lifetime requirement applies when the controller is started via `tpctl daemon` in background-style usage (§11.3).
+
 ### 11.3 Explicit control: `tpctl daemon`
 
 A `tpctl daemon` subcommand is also provided for users who want to start, supervise, or debug the controller explicitly. It has the same effect as auto-spawn but runs in the foreground.
@@ -721,11 +781,33 @@ $XDG_RUNTIME_DIR/tpctl/<hash-of-resolved-tmux-socket-path>.sock
 
 Hashing is used to keep the path short, filesystem-safe, and stable across custom tmux socket paths. Distinct tmux servers therefore get distinct controllers automatically, and `tpctl` can target multiple tmux servers from the same user session via the flags above.
 
+#### Fallback when `$XDG_RUNTIME_DIR` is unset
+
+When `$XDG_RUNTIME_DIR` is unset (common on macOS and in minimal Linux environments), implementations must fall back to `$TMPDIR/tpctl-$UID/`, or `/tmp/tpctl-$UID/` if `$TMPDIR` is also unset. The runtime directory must be created with mode `0700`. Implementations must ensure that the controller socket is accessible only to the current user; creating the socket with mode `0600` is the preferred mechanism where supported.
+
+#### Hash choice
+
+The hash function and encoding used for deriving the controller socket name are implementation-defined. They must be deterministic, produce path-safe output (hex or base64url are typical choices), and be long enough that collisions between distinct tmux socket paths are practically negligible — at least 8 bytes of a cryptographic hash is sufficient. Cross-implementation socket-name interoperability is not required because each implementation controls both ends of the derivation.
+
 ### 11.5 Startup race
 
 When auto-spawning a controller, implementations must coordinate concurrent CLI invocations so that at most one controller becomes active for a given tmux server identity. Other concurrent invocations must wait briefly and retry the controller socket connection rather than starting independent controllers. Callers either connect successfully after a bounded retry path or receive a runtime failure on `stderr` (§7.3).
 
 The specific coordination mechanism is implementation-defined. `flock` on a per-server lock file, an atomic `bind()` race on the socket path, or a pidfile with advisory locking are all acceptable — the spec mandates only the observable guarantee, not the primitive.
+
+#### Coordination order
+
+Whatever coordination primitive is used, implementations must re-check controller liveness after acquiring the coordination token and before deciding to spawn. The required sequence is:
+
+1. try to connect to the controller socket
+2. if that fails, acquire the coordination token
+3. try to connect again
+4. if step 3 still fails, spawn the controller
+5. keep the coordination token until the new controller is reachable or startup has definitively failed
+
+Step 3 exists to close a TOCTOU race: a concurrent invocation may have won the coordination race between step 1 and step 2, so the second connect attempt may succeed without spawning.
+
+*Non-normative:* a readiness poll window on the order of 1–5 seconds is reasonable for interactive use.
 
 ### 11.6 Reconnect flow
 
@@ -748,7 +830,7 @@ Policy for v1:
 
 - the retention budget is **1 MiB per pane**, measured in bytes of pane output
 - when new output would exceed the budget, the oldest retained output for that pane is evicted
-- any checkpoint token that points before the new retained start becomes invalid
+- retained stream positions are interpreted as a half-open interval `[start, end)`. A token remains valid when its offset equals the current retained `start`. Only tokens whose offset is strictly less than the retained `start` are evicted; subsequent `read` or `wait` calls using such tokens fail with `INVALID_AFTER`.
 
 If a command is invoked with a token that refers to evicted output, it must fail with `INVALID_AFTER`:
 
@@ -793,12 +875,14 @@ Example `PANE_CLOSED` failure:
 
 #### tmux server restart
 
-A tmux server restart is not a pane-level event. It is a controller-level event:
+A tmux server restart is not a pane-level event. It is a controller-level event.
 
-- the controller's tmux connection breaks
-- the controller treats this as a runtime failure (§7.3) and may exit or attempt to reconnect
-- on controller restart, all previously issued checkpoint tokens are invalidated (§4.3)
-- `PANE_CLOSED` is **not** used for server-wide restart scenarios — it is reserved for pane-level destruction within an otherwise live controller
+The controller must detect loss of its tmux server connection. Detection mechanisms are implementation-defined, but the observable behavior must follow one of two modes:
+
+- **Exit mode.** The controller terminates. A later CLI invocation may auto-spawn a fresh controller. All previously issued checkpoint tokens are invalidated by the controller-restart rule (§4.3).
+- **Reconnect mode.** The controller must perform an atomic reset of its tmux-derived state: it invalidates all previously issued checkpoint tokens, fails all pending waits as runtime failures, clears retained pane/output state derived from the old tmux server, and re-initializes pane tracking from the new tmux server state. After that reset, every pre-restart token must fail with `INVALID_AFTER`, or `PANE_NOT_FOUND` if the target pane does not exist in the re-initialized state.
+
+Pending waits that were registered before the tmux server restart must fail as runtime/controller failures (§7.3), not as `PANE_CLOSED`, and not as `TIMEOUT`. `PANE_CLOSED` is reserved for per-pane destruction on an otherwise live tmux server.
 
 ---
 
@@ -860,7 +944,7 @@ These should be explicit in code rather than inferred ad hoc.
 
 The tmux adapter should be responsible for:
 
-- maintaining the control-mode connection
+- maintaining the tmux integration channel(s) needed for observation, input, and lifecycle tracking
 - capturing visible snapshots
 - capturing scrollback when requested
 - sending text and keys
@@ -880,6 +964,8 @@ Do not expose tmux mechanics such as:
 - subscriptions / notification names
 
 These stay inside the tmux facade.
+
+*Non-normative implementation note.* The tmux adapter's observation/subscription mechanism is implementation-defined. Control mode (`tmux -C`) with subscriptions is the richest option and supports low-latency event handling. Simpler approaches, such as `pipe-pane` for pane output combined with periodic `list-panes` polling for lifecycle changes, may also satisfy the observable contract if they preserve output ordering, checkpoint semantics, pane-lifecycle correctness, and restart behavior.
 
 ---
 
@@ -1002,7 +1088,7 @@ An implementation is acceptable for v1 if it satisfies all of the following.
 26. `text` and `key` do not return until tmux has acknowledged processing the send command.
 27. `text` and `key` emit no success payload.
 28. `text` and `key` produce no stdout at all on success.
-29. `key` uses tmux's `send-keys` key vocabulary; invalid tokens fail cleanly with a structured JSON error.
+29. `key` uses tmux's `send-keys` key vocabulary. When tmux rejects a key token sequence, the failure is surfaced as a structured command-level error. Because modern tmux versions may accept unknown names permissively (see §9.5 "Validation scope"), not every misspelled token is guaranteed to trigger an error.
 30. `key` tokens are treated as data, never as tmux command syntax.
 
 ### Controller model
