@@ -100,14 +100,27 @@ func Wait(ctx context.Context, st *store.Store, req WaitRequest) (*domain.WaitRe
 	// Decode the checkpoint mint time for quiescence's formula.
 	checkpointAt, _ := st.TokenTime(req.After)
 
+	// Track whether the pane was known when this wait registered.
+	// If it was and later becomes unknown, the pane was destroyed
+	// during the wait and the correct code is PANE_CLOSED (§11.9).
+	paneKnownAtStart := false
+
 	for {
 		// Validate token + pane each iteration so a Forget (pane
 		// destroyed) surfaces as PANE_NOT_FOUND even if already
 		// buffered bytes still match. The current cost is low.
 		bytes, next, err := st.Read(req.PaneID, req.After)
 		if err != nil {
+			if paneKnownAtStart && errors.Is(err, store.ErrPaneUnknown) {
+				return nil, &domain.ErrorResponse{
+					PaneID:  string(req.PaneID),
+					Code:    domain.ErrPaneClosed,
+					Message: "pane was destroyed while wait was pending",
+				}
+			}
 			return nil, mapWaitStoreError(req.PaneID, err)
 		}
+		paneKnownAtStart = true
 
 		switch req.Mode {
 		case WaitModeSentinel:

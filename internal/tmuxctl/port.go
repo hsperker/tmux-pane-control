@@ -11,12 +11,14 @@ import (
 	"github.com/hsperker/tmux-pane-control/internal/domain"
 )
 
-// PaneOutput carries a chunk of raw bytes emitted by a specific pane.
-// Ordering per pane is preserved by the adapter; ordering across panes
-// is not required.
+// PaneOutput carries a per-pane event from the subscription. A
+// non-nil Data means new bytes were appended; Closed=true means the
+// pane has been destroyed (spec §11.9) and should be forgotten by
+// the store. Ordering per pane is preserved by the adapter.
 type PaneOutput struct {
-	ID   domain.PaneID
-	Data []byte
+	ID     domain.PaneID
+	Data   []byte
+	Closed bool
 }
 
 // ErrPaneNotFound is returned by Port operations when tmux reports that

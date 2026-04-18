@@ -101,6 +101,17 @@ func (f *Fake) Emit(id domain.PaneID, data []byte) {
 	}
 }
 
+// EmitClosed signals that the pane has been destroyed (spec §11.9).
+// Subscribers see a PaneOutput with Closed=true and no data.
+func (f *Fake) EmitClosed(id domain.PaneID) {
+	f.mu.Lock()
+	subs := append([]chan PaneOutput(nil), f.subs...)
+	f.mu.Unlock()
+	for _, c := range subs {
+		c <- PaneOutput{ID: id, Closed: true}
+	}
+}
+
 // SendText records the call and invokes SendTextFn if set.
 func (f *Fake) SendText(id domain.PaneID, text string, enter bool) error {
 	f.mu.Lock()
