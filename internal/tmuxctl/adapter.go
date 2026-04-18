@@ -66,5 +66,24 @@ func (a *Adapter) ListPanes() ([]domain.PaneID, error) {
 	return panes, nil
 }
 
+// CapturePane runs `tmux capture-pane -p -t <id>` which prints the
+// current visible screen to stdout as plain text (no ANSI). Scrollback
+// is not included in v1 slice 5; §9.2 scrollback_text is handled in a
+// later slice.
+func (a *Adapter) CapturePane(id domain.PaneID) (string, error) {
+	var stdout, stderr bytes.Buffer
+	c := a.cmd("capture-pane", "-p", "-t", string(id))
+	c.Stdout = &stdout
+	c.Stderr = &stderr
+	if err := c.Run(); err != nil {
+		if strings.Contains(stderr.String(), "can't find pane") ||
+			strings.Contains(stderr.String(), "no such pane") {
+			return "", ErrPaneNotFound
+		}
+		return "", fmt.Errorf("tmux capture-pane: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
 // Ensure Adapter satisfies Port at compile time.
 var _ Port = (*Adapter)(nil)

@@ -4,9 +4,11 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/hsperker/tmux-pane-control/internal/controller"
 	"github.com/hsperker/tmux-pane-control/internal/domain"
@@ -53,6 +55,8 @@ func (a *App) Run(args []string) int {
 		return 0
 	case "list":
 		return a.runList(args[1:])
+	case "snapshot":
+		return a.runSnapshot(args[1:])
 	default:
 		fmt.Fprintf(a.Stderr, "tpctl: unknown command %q\n\n%s", args[0], Usage)
 		return 2
@@ -86,6 +90,30 @@ func (g *globalFlags) portOrError() (tmuxctl.Port, *domain.ErrorResponse) {
 	}), nil
 }
 
+// requirePaneFlag registers --pane on fs and returns a pointer to the
+// parsed value. It does not validate format; that happens post-parse.
+func registerPaneFlag(fs *flag.FlagSet) *string {
+	return fs.String("pane", "", "target pane id, e.g. %42")
+}
+
+// validatePaneID rejects empty or non-"%"-prefixed pane identifiers.
+// Spec §5 mandates tmux pane ids as the sole identity.
+func validatePaneID(p string) *domain.ErrorResponse {
+	if p == "" {
+		return &domain.ErrorResponse{
+			Code:    domain.ErrInvalidArgs,
+			Message: "--pane is required",
+		}
+	}
+	if !strings.HasPrefix(p, "%") {
+		return &domain.ErrorResponse{
+			Code:    domain.ErrInvalidArgs,
+			Message: "--pane must be a tmux pane id (e.g. %42)",
+		}
+	}
+	return nil
+}
+
 func (a *App) runList(args []string) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -108,6 +136,41 @@ func (a *App) runList(args []string) int {
 	if err != nil {
 		// Runtime failure (spec §7.3): stderr, nonzero exit.
 		fmt.Fprintf(a.Stderr, "tpctl list: %v\n", err)
+		return 1
+	}
+	return a.emitJSON(resp)
+}
+
+func (a *App) runSnapshot(args []string) int {
+	fs := flag.NewFlagSet("snapshot", flag.ContinueOnError)
+	fs.SetOutput(a.Stderr)
+	var g globalFlags
+	g.register(fs)
+	pane := registerPaneFlag(fs)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return a.emitCmdError(&domain.ErrorResponse{
+			Code:    domain.ErrInvalidArgs,
+			Message: "snapshot takes no positional arguments",
+		})
+	}
+	if e := validatePaneID(*pane); e != nil {
+		return a.emitCmdError(e)
+	}
+	port, cerr := g.portOrError()
+	if cerr != nil {
+		return a.emitCmdError(cerr)
+	}
+
+	resp, err := controller.Snapshot(port, &controller.CounterIssuer{}, domain.PaneID(*pane))
+	if err != nil {
+		var ce *domain.ErrorResponse
+		if errors.As(err, &ce) {
+			return a.emitCmdError(ce)
+		}
+		fmt.Fprintf(a.Stderr, "tpctl snapshot: %v\n", err)
 		return 1
 	}
 	return a.emitJSON(resp)
