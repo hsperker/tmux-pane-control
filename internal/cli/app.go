@@ -354,11 +354,8 @@ func (a *App) runWait(args []string) int {
 	forMode := fs.String("for", "", "match mode: sentinel|regex|quiescence")
 	timeoutMs := fs.Int("timeout-ms", 0, "wait timeout in milliseconds (required)")
 	sentinelToken := fs.String("token", "", "sentinel mode: literal token to expect in __DONE__:<token>:<exit>")
-	// Regex and quiescence flags are wired here so the FlagSet
-	// recognises them (slice 12/13 activate the handlers); for slice
-	// 11 their values are unused.
 	_ = fs.String("pattern", "", "regex mode: RE2 pattern")
-	_ = fs.Int("ms", 0, "quiescence mode: required quiet window in ms")
+	quietMs := fs.Int("ms", 0, "quiescence mode: required quiet window in ms")
 	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
 		return 2
 	}
@@ -383,11 +380,13 @@ func (a *App) runWait(args []string) int {
 	switch *forMode {
 	case "sentinel":
 		mode = controller.WaitModeSentinel
-	case "regex", "quiescence":
+	case "quiescence":
+		mode = controller.WaitModeQuiescence
+	case "regex":
 		return a.emitCmdError(&domain.ErrorResponse{
 			PaneID:  *pane,
 			Code:    domain.ErrInvalidArgs,
-			Message: "--for " + *forMode + " is not implemented yet",
+			Message: "--for regex is not implemented yet",
 		})
 	case "":
 		return a.emitCmdError(&domain.ErrorResponse{
@@ -422,6 +421,7 @@ func (a *App) runWait(args []string) int {
 		Timeout:       time.Duration(*timeoutMs) * time.Millisecond,
 		Mode:          mode,
 		SentinelToken: *sentinelToken,
+		QuietWindow:   time.Duration(*quietMs) * time.Millisecond,
 	})
 	if err != nil {
 		var ce *domain.ErrorResponse

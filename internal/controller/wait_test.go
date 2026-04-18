@@ -139,6 +139,106 @@ func TestWait_SentinelTokenValidation(t *testing.T) {
 	}
 }
 
+func TestWait_Quiescence_ImmediatelySatisfied(t *testing.T) {
+	// Spec §9.6: if the pane is already quiet for at least --ms
+	// when the wait is registered, succeed immediately.
+	s := store.New(1024)
+	tok := s.NewToken("%42")
+	// Ensure the checkpoint mint time is older than the quiet window.
+	time.Sleep(60 * time.Millisecond)
+	resp, err := Wait(context.Background(), s, WaitRequest{
+		PaneID: "%42", After: tok, Timeout: time.Second,
+		Mode: WaitModeQuiescence, QuietWindow: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if resp.Result != domain.WaitQuiescence {
+		t.Fatalf("result = %q", resp.Result)
+	}
+	if resp.Matched != nil {
+		t.Fatalf("matched must be nil, got %v", *resp.Matched)
+	}
+	if resp.ExitCode != nil {
+		t.Fatalf("exit_code must be nil, got %v", *resp.ExitCode)
+	}
+}
+
+func TestWait_Quiescence_ResetOnOutput(t *testing.T) {
+	// Spec §9.6: any byte appended after the checkpoint resets the
+	// quiet timer. Keep appending inside the quiet window; wait only
+	// succeeds once we stop.
+	s := store.New(1024)
+	tok := s.NewToken("%42")
+
+	done := make(chan *domain.WaitResponse, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		r, e := Wait(context.Background(), s, WaitRequest{
+			PaneID: "%42", After: tok, Timeout: 3 * time.Second,
+			Mode: WaitModeQuiescence, QuietWindow: 100 * time.Millisecond,
+		})
+		if e != nil {
+			errCh <- e
+			return
+		}
+		done <- r
+	}()
+
+	// Keep the pane "active" by appending every 30ms for 200ms total.
+	for i := 0; i < 6; i++ {
+		time.Sleep(30 * time.Millisecond)
+		s.Append("%42", []byte("."))
+	}
+	// Then stop and wait for success.
+	select {
+	case r := <-done:
+		if r.Result != domain.WaitQuiescence {
+			t.Fatalf("result = %q", r.Result)
+		}
+	case e := <-errCh:
+		t.Fatalf("Wait errored: %v", e)
+	case <-time.After(2 * time.Second):
+		t.Fatal("quiescence did not settle in time")
+	}
+}
+
+func TestWait_Quiescence_TimeoutUnderSteadyOutput(t *testing.T) {
+	// If output never stops, quiescence never triggers; we should
+	// hit the wait timeout.
+	s := store.New(1024)
+	tok := s.NewToken("%42")
+
+	// Background feeder: spam output faster than the quiet window.
+	feederCtx, feederCancel := context.WithCancel(context.Background())
+	defer feederCancel()
+	go func() {
+		t := time.NewTicker(20 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-feederCtx.Done():
+				return
+			case <-t.C:
+				s.Append("%42", []byte("."))
+			}
+		}
+	}()
+
+	_, err := Wait(context.Background(), s, WaitRequest{
+		PaneID: "%42", After: tok, Timeout: 150 * time.Millisecond,
+		Mode: WaitModeQuiescence, QuietWindow: 100 * time.Millisecond,
+	})
+	feederCancel()
+	var cerr *domain.ErrorResponse
+	if !errors.As(err, &cerr) {
+		t.Fatalf("want ErrorResponse, got %v", err)
+	}
+	if cerr.Code != domain.ErrTimeout {
+		t.Fatalf("code = %q", cerr.Code)
+	}
+}
+
 func TestWait_Concurrent(t *testing.T) {
 	// Spec §9.6 concurrency: multiple waits on the same pane evaluate
 	// independently. Register two sentinel waits with different
