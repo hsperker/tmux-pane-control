@@ -7,12 +7,12 @@
 It is designed for coding agents such as Codex that need to:
 
 - discover tmux panes
-- capture the current visible pane state
+- capture the current visible pane state (optionally with scrollback)
 - continue reading pane output incrementally without races
-- send text and keys to a pane
-- wait for output conditions without polling heuristics
+- send text and keys to a pane with a clear send-ack guarantee
+- wait for output conditions without polling heuristics, using sentinel, regex, or quiescence modes
 
-The design is intentionally simple, tmux-specific, and optimized for machine consumption.
+The design is intentionally simple, tmux-specific, and optimized for machine consumption. A short-lived CLI frontend talks to an auto-spawned controller process that owns tmux state and per-pane output stream buffers behind opaque checkpoint tokens (see §19 for a quick reference).
 
 ---
 
@@ -21,9 +21,10 @@ The design is intentionally simple, tmux-specific, and optimized for machine con
 - Keep the API small and explicit.
 - Use tmux-native terminology where it helps clarity.
 - Avoid leaky exposure of tmux control-mode mechanics.
-- Avoid race-prone "read from now" semantics.
-- Favor stable, compact, agent-friendly JSON.
-- Keep the implementation modular without overengineering.
+- Avoid race-prone "read from now" semantics — every observation is anchored to an explicit checkpoint token.
+- Favor stable, compact, agent-friendly JSON with uniform text normalization.
+- Give agents deterministic, testable guarantees (send-ack ordering, lock-free concurrent waits, structured sentinels with parsed exit codes).
+- Keep the implementation modular without overengineering: one controller per tmux server, hexagonal internals, bounded in-memory state.
 
 ---
 
@@ -37,8 +38,12 @@ The following are explicitly out of scope for v1:
 - plugin system
 - remote tmux servers
 - multi-user / cross-host coordination
-- durable persistence or database storage
+- durable persistence or database storage (retained output is in-memory only; see §11.8)
 - rich terminal semantics beyond what is required for snapshots and incremental reads
+- preserving raw ANSI escape sequences in JSON output (all text fields are stripped — see §8.3)
+- exposing regex submatches or capture groups in `wait --for regex` responses
+- human-friendly pane location (session:window.pane) in the public API; `%pane_id` is the sole identity (see §5)
+- configurable retention budgets exposed via the public API
 
 ---
 
@@ -1035,3 +1040,78 @@ Possible later additions:
 - pane-selection helpers for humans
 
 These are intentionally excluded from the v1 contract.
+
+---
+
+## 19. Agent quick reference
+
+This section is a condensed reference for agents consuming `tpctl`. It is informative, not normative; the binding behavior is defined in §4–§17.
+
+### Mental model
+
+A pane is a **visible screen** plus an **append-only output stream**. You observe the stream through **opaque checkpoint tokens** (JSON strings). Every read or wait is anchored to a token; there is no "read from now."
+
+### Command table
+
+| Command | Purpose | Returns |
+|---|---|---|
+| `tpctl list` | enumerate panes | `{"panes": ["%42", ...]}` |
+| `tpctl snapshot --pane %N [--history-lines K]` | bootstrap observation; get `text` and a token | `pane_id`, `next`, `text`, optional `scrollback_text` |
+| `tpctl read --pane %N --after TOKEN` | incremental read | `pane_id`, `next`, `text` (may be `""`) |
+| `tpctl text --pane %N "..." [--enter]` | send literal text | empty stdout |
+| `tpctl key --pane %N <key> [<key>...]` | send tmux keys (`Enter`, `C-c`, `Escape`, …) | empty stdout |
+| `tpctl wait --pane %N --after TOKEN --for <mode> ... --timeout-ms T` | wait for output condition | `pane_id`, `next`, `result`, plus `matched` / `exit_code` when relevant |
+| `tpctl daemon` | explicit controller startup | runs in foreground |
+
+### The race-free idiom
+
+```bash
+SNAP=$(tpctl snapshot --pane %42)          # remember next from here
+TOKEN=$(echo "$SNAP" | jq -r .next)
+
+tpctl text --pane %42 "make test; printf '__DONE__:run1:%d\n' $?" --enter
+
+tpctl wait --pane %42 --after "$TOKEN" \
+  --for sentinel --token run1 --timeout-ms 30000
+```
+
+Why this works:
+
+- `text` does not return until tmux has acknowledged the send (§9.4)
+- `wait --after TOKEN` scans **all retained output after TOKEN**, including output already buffered by the time `wait` registers (§9.6)
+- the sentinel response parses the exit code into `exit_code` (§9.6)
+
+### Wait modes at a glance
+
+- `--for sentinel --token TOKEN` — match `__DONE__:TOKEN:<exit-code>`; response includes `exit_code`
+- `--for regex --pattern PATTERN` — RE2 against ANSI-stripped post-checkpoint text; response includes `matched` (whole match, no submatches)
+- `--for quiescence --ms MS` — output has been idle for at least `MS` ms; succeeds immediately if already quiet
+
+### Text representation
+
+All text fields (`snapshot.text`, `snapshot.scrollback_text`, `read.text`) and all wait-match inputs are:
+
+- ANSI-stripped
+- `\n`-normalized (no `\r\n`)
+- trailing-whitespace-trimmed per line
+- trailing-blank-lines-trimmed
+
+### Error handling cheat sheet
+
+| Code | When | Recovery |
+|---|---|---|
+| `MISSING_AFTER` | `read`/`wait` called without `--after` | call `snapshot` to get a token |
+| `INVALID_AFTER` | token wrong pane, evicted (>1 MiB ago), or from old controller | call `snapshot` again |
+| `PANE_NOT_FOUND` | pane doesn't exist at dispatch | call `list` |
+| `PANE_CLOSED` | pane vanished during your `wait` | choose a different pane |
+| `TIMEOUT` | `wait` hit `--timeout-ms` | retry with a longer timeout or a different mode |
+
+Command-level errors are JSON on `stdout`; runtime/controller failures are diagnostics on `stderr`. Both use nonzero exit codes. Implementations may emit additional codes — branch on the canonical ones above.
+
+### Rules worth memorizing
+
+- `%pane_id` is the only identity; tokens are pane-scoped and controller-lifetime scoped
+- `text` takes **exactly one** positional argument; embedded newlines are sent literally; `--enter` appends an `Enter` key press (not `\n`)
+- concurrent `wait`s on the same pane are supported and independent
+- retained output is 1 MiB per pane; if you lag that far behind, expect `INVALID_AFTER`
+- controller auto-spawns on first use; one per tmux server, keyed on the resolved tmux socket path
