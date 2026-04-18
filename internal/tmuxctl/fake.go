@@ -25,17 +25,19 @@ type FakeSendKeys struct {
 //
 // Emit sends synthetic pane output to every live Subscribe channel.
 type Fake struct {
-	Panes         []domain.PaneID
-	Screens       map[domain.PaneID]string
-	ListPanesFn   func() ([]domain.PaneID, error)
-	CapturePaneFn func(domain.PaneID) (string, error)
-	SendTextFn    func(domain.PaneID, string, bool) error
-	SendKeysFn    func(domain.PaneID, []string) error
+	Panes             []domain.PaneID
+	Screens           map[domain.PaneID]string
+	Scrollback        map[domain.PaneID]string
+	ListPanesFn       func() ([]domain.PaneID, error)
+	CapturePaneFn     func(domain.PaneID) (string, error)
+	CaptureScrollFn   func(domain.PaneID, int) (string, error)
+	SendTextFn        func(domain.PaneID, string, bool) error
+	SendKeysFn        func(domain.PaneID, []string) error
 
-	mu         sync.Mutex
-	subs       []chan PaneOutput
-	sentText   []FakeSendText
-	sentKeys   []FakeSendKeys
+	mu       sync.Mutex
+	subs     []chan PaneOutput
+	sentText []FakeSendText
+	sentKeys []FakeSendKeys
 }
 
 // ListPanes returns either the ListPanesFn result (if set) or the Panes
@@ -57,6 +59,27 @@ func (f *Fake) CapturePane(id domain.PaneID) (string, error) {
 	if f.Screens != nil {
 		if text, ok := f.Screens[id]; ok {
 			return text, nil
+		}
+	}
+	for _, p := range f.Panes {
+		if p == id {
+			return "", nil
+		}
+	}
+	return "", ErrPaneNotFound
+}
+
+// CaptureScrollback returns pre-set Scrollback content or empty.
+func (f *Fake) CaptureScrollback(id domain.PaneID, lines int) (string, error) {
+	if f.CaptureScrollFn != nil {
+		return f.CaptureScrollFn(id, lines)
+	}
+	if lines <= 0 {
+		return "", nil
+	}
+	if f.Scrollback != nil {
+		if s, ok := f.Scrollback[id]; ok {
+			return s, nil
 		}
 	}
 	for _, p := range f.Panes {

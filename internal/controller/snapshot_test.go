@@ -15,7 +15,7 @@ func TestSnapshot_VisibleScreen(t *testing.T) {
 		Screens: map[domain.PaneID]string{"%42": "hello\n$ "},
 	}
 	s := store.New(64)
-	resp, err := Snapshot(fake, s, "%42")
+	resp, err := Snapshot(fake, s, "%42", nil)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestSnapshot_TokenFeedsRead(t *testing.T) {
 		Screens: map[domain.PaneID]string{"%42": "prompt"},
 	}
 	s := store.New(64)
-	resp, err := Snapshot(fake, s, "%42")
+	resp, err := Snapshot(fake, s, "%42", nil)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestSnapshot_NormalizesText(t *testing.T) {
 			"%42": "\x1b[31mhello\x1b[0m  \r\n$  \n\n\n",
 		},
 	}
-	resp, err := Snapshot(fake, store.New(64), "%42")
+	resp, err := Snapshot(fake, store.New(64), "%42", nil)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestSnapshot_NormalizesText(t *testing.T) {
 }
 
 func TestSnapshot_PaneNotFound(t *testing.T) {
-	_, err := Snapshot(&tmuxctl.Fake{}, store.New(64), "%99")
+	_, err := Snapshot(&tmuxctl.Fake{}, store.New(64), "%99", nil)
 	if err == nil {
 		t.Fatal("want error, got nil")
 	}
@@ -94,12 +94,68 @@ func TestSnapshot_PaneNotFound(t *testing.T) {
 	}
 }
 
+func TestSnapshot_HistoryLines(t *testing.T) {
+	fake := &tmuxctl.Fake{
+		Panes:      []domain.PaneID{"%42"},
+		Screens:    map[domain.PaneID]string{"%42": "visible"},
+		Scrollback: map[domain.PaneID]string{"%42": "older1\nolder2"},
+	}
+	five := 5
+	resp, err := Snapshot(fake, store.New(64), "%42", &five)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if resp.ScrollbackText == nil {
+		t.Fatal("scrollback_text must be present when history requested")
+	}
+	if *resp.ScrollbackText != "older1\nolder2" {
+		t.Fatalf("scrollback_text = %q", *resp.ScrollbackText)
+	}
+	if resp.Text != "visible" {
+		t.Fatalf("text = %q", resp.Text)
+	}
+}
+
+func TestSnapshot_HistoryZeroIncludesEmpty(t *testing.T) {
+	// Spec §9.2: N=0 means "history mode requested, zero lines";
+	// scrollback_text: "" is included (not omitted).
+	fake := &tmuxctl.Fake{
+		Panes:   []domain.PaneID{"%42"},
+		Screens: map[domain.PaneID]string{"%42": "visible"},
+	}
+	zero := 0
+	resp, err := Snapshot(fake, store.New(64), "%42", &zero)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if resp.ScrollbackText == nil {
+		t.Fatal("scrollback_text must be present (even as \"\") when history=0")
+	}
+	if *resp.ScrollbackText != "" {
+		t.Fatalf("scrollback_text = %q, want \"\"", *resp.ScrollbackText)
+	}
+}
+
+func TestSnapshot_NoHistoryOmitsScrollback(t *testing.T) {
+	fake := &tmuxctl.Fake{
+		Panes:   []domain.PaneID{"%42"},
+		Screens: map[domain.PaneID]string{"%42": "visible"},
+	}
+	resp, err := Snapshot(fake, store.New(64), "%42", nil)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if resp.ScrollbackText != nil {
+		t.Fatalf("scrollback_text must be absent, got %q", *resp.ScrollbackText)
+	}
+}
+
 func TestSnapshot_RuntimeError(t *testing.T) {
 	boom := errors.New("boom")
 	fake := &tmuxctl.Fake{
 		CapturePaneFn: func(domain.PaneID) (string, error) { return "", boom },
 	}
-	_, err := Snapshot(fake, store.New(64), "%42")
+	_, err := Snapshot(fake, store.New(64), "%42", nil)
 	if !errors.Is(err, boom) {
 		t.Fatalf("want boom, got %v", err)
 	}

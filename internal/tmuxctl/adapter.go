@@ -128,10 +128,34 @@ func (a *Adapter) SendKeys(id domain.PaneID, keys []string) error {
 	return nil
 }
 
+// CaptureScrollback runs `tmux capture-pane -p -S -N -E -1 -t <id>`
+// which prints the portion of the pane's history above the visible
+// screen as plain text. lines <= 0 short-circuits to an empty string.
+// Line -1 in tmux's numbering is "the most recent scrollback line",
+// i.e. the line just above the top of the visible screen.
+func (a *Adapter) CaptureScrollback(id domain.PaneID, lines int) (string, error) {
+	if lines <= 0 {
+		return "", nil
+	}
+	var stdout, stderr bytes.Buffer
+	c := a.cmd("capture-pane", "-p",
+		"-S", fmt.Sprintf("-%d", lines),
+		"-E", "-1",
+		"-t", string(id))
+	c.Stdout = &stdout
+	c.Stderr = &stderr
+	if err := c.Run(); err != nil {
+		if isPaneMissingStderr(stderr.String()) {
+			return "", ErrPaneNotFound
+		}
+		return "", fmt.Errorf("tmux capture-pane scrollback: %w: %s",
+			err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
 // CapturePane runs `tmux capture-pane -p -t <id>` which prints the
-// current visible screen to stdout as plain text (no ANSI). Scrollback
-// is not included in v1 slice 5; §9.2 scrollback_text is handled in a
-// later slice.
+// current visible screen to stdout as plain text (no ANSI).
 func (a *Adapter) CapturePane(id domain.PaneID) (string, error) {
 	var stdout, stderr bytes.Buffer
 	c := a.cmd("capture-pane", "-p", "-t", string(id))

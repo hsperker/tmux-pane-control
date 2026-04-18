@@ -35,7 +35,7 @@ func TestController_SnapshotReadRoundTrip(t *testing.T) {
 	}
 	t.Cleanup(c.Stop)
 
-	snap, err := c.Snapshot("%42")
+	snap, err := c.Snapshot("%42", nil)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestController_ReadEmptyWithoutOutput(t *testing.T) {
 	}
 	t.Cleanup(c.Stop)
 
-	snap, err := c.Snapshot("%42")
+	snap, err := c.Snapshot("%42", nil)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestController_MultipleSnapshotsSamePane(t *testing.T) {
 	}
 	t.Cleanup(c.Stop)
 
-	snap1, err := c.Snapshot("%42")
+	snap1, err := c.Snapshot("%42", nil)
 	if err != nil {
 		t.Fatalf("snap1: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestController_MultipleSnapshotsSamePane(t *testing.T) {
 		return err == nil && r.Text == "abc"
 	})
 	// Second snapshot: the token advances past the appended bytes.
-	snap2, err := c.Snapshot("%42")
+	snap2, err := c.Snapshot("%42", nil)
 	if err != nil {
 		t.Fatalf("snap2: %v", err)
 	}
