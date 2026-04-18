@@ -400,11 +400,29 @@ Sends named keys and key-like tokens to a pane.
 
 ```bash
 tpctl key --pane %42 Escape Enter
-```
-
-```bash
+tpctl key --pane %42 C-c
+tpctl key --pane %42 Up Down Enter
 tpctl key --pane %42 Escape ":" "q" Enter
 ```
+
+### Key vocabulary
+
+`tpctl key` uses tmux's `send-keys` key vocabulary. The full table of accepted key names and modifier forms (e.g. `Enter`, `Escape`, `Tab`, `BSpace`, arrow keys, `F1`–`F12`, `C-<x>`, `M-<x>`, `S-<x>`) is defined by `tmux(1)`. The spec does not duplicate that table.
+
+### Token handling rules
+
+- each CLI argument after `--pane` is one key token
+- tokens are treated as **data**, not as tmux command syntax
+- the controller must invoke tmux with argv-style arguments, never by building a shell command string
+- there is no shell interpolation, no command concatenation, no `;` separator behavior, and no way to escape into arbitrary tmux commands
+- a token such as `";"` is a literal token (or an invalid key token), never a command separator
+
+### When to use `text` vs `key`
+
+- use `text` for arbitrary literal text input
+- use `key` for named keys, modifiers, navigation, and control sequences
+
+Using `key` to type long text is discouraged.
 
 ### Success behavior
 
@@ -414,6 +432,18 @@ tpctl key --pane %42 Escape ":" "q" Enter
 ### Ordering guarantee
 
 `key` returns only after the controller has received tmux's acknowledgement that the send command was processed. The same caveat as §9.4 applies: this is not proof that the target program has reacted.
+
+### Failure example: invalid key token
+
+```json
+{
+  "pane_id": "%42",
+  "code": "INVALID_KEY",
+  "message": "invalid key token: FooBarKey"
+}
+```
+
+`INVALID_KEY` is an implementation-defined code in v1 (§7.5), not part of the canonical set.
 
 ---
 
