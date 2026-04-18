@@ -506,7 +506,61 @@ Implement the tool as a small hexagonal system with a tmux facade adapter and a 
 
 ---
 
-## 11. Suggested internal structure
+## 11. Controller lifecycle and IPC
+
+`tpctl` is a single binary with two logical roles:
+
+- a short-lived **CLI frontend** (one process per invocation)
+- a long-lived **controller process** that owns tmux state and pane buffers
+
+### 11.1 One controller per tmux server
+
+There is exactly one controller per tmux server. Checkpoint tokens are valid only within the controller instance that issued them (see §4.3).
+
+### 11.2 Default behavior: auto-spawn
+
+On each invocation the CLI:
+
+1. determines which tmux server it is targeting
+2. derives the controller socket path for that server
+3. attempts to connect to the controller
+4. if no controller is running, starts one automatically
+5. reconnects and proceeds with the command
+
+### 11.3 Explicit control: `tpctl daemon`
+
+A `tpctl daemon` subcommand is also provided for users who want to start, supervise, or debug the controller explicitly. It has the same effect as auto-spawn but runs in the foreground.
+
+### 11.4 Socket location
+
+Controller sockets live under a well-known per-user runtime path, for example:
+
+```text
+$XDG_RUNTIME_DIR/tpctl/
+```
+
+The socket name is derived from the target tmux server identity so that distinct tmux servers get distinct controllers.
+
+### 11.5 Startup race
+
+Two simultaneous CLI invocations must not both spawn a controller. Implementations use a lock file or equivalent coordination to serialize spawn attempts.
+
+### 11.6 Reconnect flow
+
+If the initial connect fails:
+
+- attempt to spawn a controller
+- wait briefly for readiness
+- retry the connect
+- if the connect still fails, emit a runtime failure on `stderr` (§7.3)
+
+### 11.7 Controller restart
+
+If the controller restarts, all previously issued checkpoint tokens are invalidated. The agent must call `snapshot` to obtain a new token. This matches the token lifetime rule in §4.3.
+
+---
+
+## 12. Suggested internal structure
 
 A Go-oriented layout could look like:
 
@@ -533,11 +587,11 @@ internal/store/
 
 ---
 
-## 12. Internal state machines
+## 13. Internal state machines
 
 These are internal, not part of the public API.
 
-### 12.1 Transport state
+### 13.1 Transport state
 
 Suggested states:
 
@@ -547,7 +601,7 @@ Suggested states:
 - `resyncing`
 - `failed`
 
-### 12.2 Wait lifecycle state
+### 13.2 Wait lifecycle state
 
 Suggested states:
 
@@ -560,7 +614,7 @@ These should be explicit in code rather than inferred ad hoc.
 
 ---
 
-## 13. Internal tmux integration guidance
+## 14. Internal tmux integration guidance
 
 The tmux adapter should be responsible for:
 
@@ -587,7 +641,7 @@ These stay inside the tmux facade.
 
 ---
 
-## 14. Explicit simplifications for v1
+## 15. Explicit simplifications for v1
 
 To keep v1 simple and correct:
 
@@ -602,9 +656,9 @@ To keep v1 simple and correct:
 
 ---
 
-## 15. Agent usage patterns
+## 16. Agent usage patterns
 
-## 15.1 Bootstrap observation
+## 16.1 Bootstrap observation
 
 ```bash
 tpctl snapshot --pane %42
@@ -612,7 +666,7 @@ tpctl snapshot --pane %42
 
 Agent stores `next`.
 
-## 15.2 Bootstrap with context
+## 16.2 Bootstrap with context
 
 ```bash
 tpctl snapshot --pane %42 --history-lines 40
@@ -624,13 +678,13 @@ Agent gets:
 - `text`
 - `next`
 
-## 15.3 Observe incrementally
+## 16.3 Observe incrementally
 
 ```bash
 tpctl read --pane %42 --after TOKEN
 ```
 
-## 15.4 Send a command and wait for a sentinel
+## 16.4 Send a command and wait for a sentinel
 
 ```bash
 tpctl snapshot --pane %42
@@ -641,7 +695,7 @@ tpctl text --pane %42 "kubectl get pods; printf '__DONE__:abc123:%d\\n' $?" --en
 tpctl wait --pane %42 --after r_100 --for sentinel --token abc123 --timeout-ms 5000
 ```
 
-## 15.5 Send keys to a TUI and wait for quiet
+## 16.5 Send keys to a TUI and wait for quiet
 
 ```bash
 tpctl snapshot --pane %42
@@ -654,7 +708,7 @@ tpctl wait --pane %42 --after r_200 --for quiescence --ms 250 --timeout-ms 3000
 
 ---
 
-## 16. Acceptance criteria
+## 17. Acceptance criteria
 
 An implementation is acceptable for v1 if it satisfies all of the following:
 
@@ -674,7 +728,7 @@ An implementation is acceptable for v1 if it satisfies all of the following:
 
 ---
 
-## 17. Future extensions (not in v1)
+## 18. Future extensions (not in v1)
 
 Possible later additions:
 
