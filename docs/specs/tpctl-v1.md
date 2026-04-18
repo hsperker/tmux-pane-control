@@ -686,7 +686,9 @@ Hashing is used to keep the path short, filesystem-safe, and stable across custo
 
 ### 11.5 Startup race
 
-Two simultaneous CLI invocations must not both spawn a controller. Implementations use a lock file or equivalent coordination to serialize spawn attempts.
+When auto-spawning a controller, implementations must coordinate concurrent CLI invocations so that at most one controller becomes active for a given tmux server identity. Other concurrent invocations must wait briefly and retry the controller socket connection rather than starting independent controllers. Callers either connect successfully after a bounded retry path or receive a runtime failure on `stderr` (§7.3).
+
+The specific coordination mechanism is implementation-defined. `flock` on a per-server lock file, an atomic `bind()` race on the socket path, or a pidfile with advisory locking are all acceptable — the spec mandates only the observable guarantee, not the primitive.
 
 ### 11.6 Reconnect flow
 
