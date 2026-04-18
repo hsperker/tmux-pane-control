@@ -54,6 +54,43 @@ func TestAdapter_SendKeys_NamedKey(t *testing.T) {
 	}
 }
 
+// TestAdapter_SendKeys_SemicolonIsLiteral pins spec §9.5's data-not-
+// syntax guarantee: a key token of ";" must reach tmux as a literal
+// semicolon keystroke, NOT as tmux's argv-level command separator.
+// Before the escape fix, `tmux send-keys %0 -- ; new-window` was
+// parsed by tmux as two commands (send-keys; new-window) and the
+// new-window actually ran, creating a second window. The conformance
+// kit's C30 scenario caught this; this unit test guards against
+// regression without needing the full kit.
+func TestAdapter_SendKeys_SemicolonIsLiteral(t *testing.T) {
+	sock := newTmuxServer(t)
+	a := NewAdapter(Opts{SocketPath: sock})
+	panes, err := a.ListPanes()
+	if err != nil || len(panes) == 0 {
+		t.Fatalf("ListPanes: %v", err)
+	}
+
+	beforeWindows := countWindows(t, sock)
+	// "; new-window" would be two commands if we didn't escape.
+	if err := a.SendKeys(panes[0], []string{";", "new-window"}); err != nil {
+		t.Fatalf("SendKeys: %v", err)
+	}
+	afterWindows := countWindows(t, sock)
+	if afterWindows > beforeWindows {
+		t.Fatalf("tmux executed new-window as a command: %d → %d windows",
+			beforeWindows, afterWindows)
+	}
+}
+
+func countWindows(t *testing.T, sock string) int {
+	t.Helper()
+	out, err := exec.Command("tmux", "-S", sock, "list-windows").Output()
+	if err != nil {
+		t.Fatalf("list-windows: %v", err)
+	}
+	return strings.Count(string(out), "\n")
+}
+
 func TestAdapter_SendText_MissingPane(t *testing.T) {
 	sock := newTmuxServer(t)
 	a := NewAdapter(Opts{SocketPath: sock})
