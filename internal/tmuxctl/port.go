@@ -38,6 +38,11 @@ type Port interface {
 	// reports the pane is missing.
 	CapturePane(id domain.PaneID) (string, error)
 
+	// CaptureScrollback returns up to lines of pane scrollback (the
+	// portion above the visible screen), as raw text. lines <= 0
+	// returns an empty string without invoking tmux.
+	CaptureScrollback(id domain.PaneID, lines int) (string, error)
+
 	// Subscribe returns a channel that receives PaneOutput events
 	// for every byte appended to any pane on the tmux server. The
 	// channel is closed when ctx is cancelled or the subscription

@@ -62,7 +62,7 @@ func TestWait_PaneClosedWhilePending(t *testing.T) {
 	}
 	t.Cleanup(c.Stop)
 
-	snap, err := c.Snapshot("%1")
+	snap, err := c.Snapshot("%1", nil)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestWait_PaneMissingAtDispatch(t *testing.T) {
 	t.Cleanup(c.Stop)
 
 	// Mint a token, then destroy the pane before Wait is called.
-	snap, err := c.Snapshot("%1")
+	snap, err := c.Snapshot("%1", nil)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}

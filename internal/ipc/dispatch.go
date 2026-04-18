@@ -20,7 +20,11 @@ func Dispatch(ctx context.Context, c *controller.Controller, req *Request) *Resp
 	case OpList:
 		return marshalBody(c.List())
 	case OpSnapshot:
-		return marshalBody(c.Snapshot(req.Pane))
+		var hl *int
+		if req.HasHistory {
+			hl = &req.HistoryLines
+		}
+		return marshalBody(c.Snapshot(req.Pane, hl))
 	case OpRead:
 		if req.After == "" {
 			return cmdErr(&domain.ErrorResponse{

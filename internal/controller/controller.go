@@ -87,9 +87,11 @@ func (c *Controller) List() (*domain.ListResponse, error) {
 	return List(c.port)
 }
 
-// Snapshot implements `tpctl snapshot` (spec §9.2).
-func (c *Controller) Snapshot(id domain.PaneID) (*domain.SnapshotResponse, error) {
-	return Snapshot(c.port, c.store, id)
+// Snapshot implements `tpctl snapshot` (spec §9.2). historyLines is
+// non-nil when the caller supplied --history-lines; nil means "no
+// history requested" and ScrollbackText is omitted from the response.
+func (c *Controller) Snapshot(id domain.PaneID, historyLines *int) (*domain.SnapshotResponse, error) {
+	return Snapshot(c.port, c.store, id, historyLines)
 }
 
 // Read implements `tpctl read` (spec §9.3).

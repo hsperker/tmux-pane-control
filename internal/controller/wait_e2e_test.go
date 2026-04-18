@@ -44,7 +44,7 @@ func TestWait_EndToEnd_Sentinel(t *testing.T) {
 	// Give pipe-pane trackers a moment to attach before sending.
 	time.Sleep(400 * time.Millisecond)
 
-	snap, err := c.Snapshot(pane)
+	snap, err := c.Snapshot(pane, nil)
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
