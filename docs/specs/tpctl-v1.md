@@ -163,6 +163,23 @@ tpctl key  --pane %42 -- -l
 
 In the `key` example, `-l` is sent as a literal key token to tmux; it is not parsed as a CLI flag.
 
+### 6.2 Global flag position
+
+Global flags — `--tmux-socket`, `--tmux-socket-name`, and `--help` — may appear **before or after** the subcommand. Implementations must accept both positions equivalently. The following invocations must all succeed and produce identical behavior:
+
+```bash
+tpctl --tmux-socket /tmp/t.sock list
+tpctl list --tmux-socket /tmp/t.sock
+tpctl list --tmux-socket=/tmp/t.sock
+
+tpctl --help
+tpctl list --help
+```
+
+Rationale: matching the convention used by `tmux` itself (`tmux -S SOCK list-sessions`) and by `kubectl`, `docker`, `git`, and similar tools lets users reach for familiar muscle memory. Requiring a specific position would be a footgun the spec's own examples do not explain.
+
+Subcommand-specific flags (e.g. `--pane`, `--after`, `--for`, `--timeout-ms`) remain bound to their subcommand and cannot be hoisted to pre-subcommand position, because their validity depends on which subcommand is running.
+
 ---
 
 ## 7. Output and error conventions

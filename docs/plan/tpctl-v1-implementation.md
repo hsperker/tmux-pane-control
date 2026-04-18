@@ -154,18 +154,65 @@ list and resulting spec changes are captured in the PR that updated
 ## Known implementation deviations from the tightened spec
 
 Some spec tightenings have not yet been reflected in the
-implementation on its branch. These are tracked as follow-up work:
+implementation. These are tracked as follow-up work:
 
-- **§9.6 CR handling.** The wait handler needs `\r` stripping before
-  the matcher runs. Small change in `internal/controller/wait.go`.
 - **§11.9 tmux server restart.** The controller does not currently
   detect tmux connection loss; pre-restart tokens remain "valid"
   after a tmux restart. Needs either exit-on-failure or
   atomic-state-reset reconnect.
-- **§11.2 daemon lifetime.** Verify the spawned daemon survives the
-  CLI being killed by a process-tree reaper. The current
-  `setsid`-based detachment is likely sufficient, but a regression
-  test under simulated SIGHUP would pin it.
+- **§6.2 global flag position.** The CLI dispatcher rejects global
+  flags that precede the subcommand: `tpctl --tmux-socket X list`
+  fails with "unknown command --tmux-socket", and only the
+  post-subcommand form `tpctl list --tmux-socket X` works. Fix is
+  a small change in `internal/cli/app.go` to strip recognized
+  global flags from `args` before the subcommand dispatch switch.
+  This finding surfaced from the live real-tmux smoke test (see
+  below), not from the test suite, which exclusively uses the
+  post-subcommand form.
+
+### Resolved since the first retrospective
+
+- **§9.6 CR handling.** Wait handler now uses
+  `textnorm.StripANSIAndCR` for both sentinel and regex modes.
+  Regression test: `TestWait_Regex_MultilineAnchorAgainstCRLF`.
+  Verified live: `(?m)^READY-MARKER$` now matches against real
+  tmux CRLF output.
+- **§11.2 daemon lifetime regression test.** New
+  `cmd/tpctl/daemon_lifetime_test.go` starts a bash subprocess
+  that auto-spawns the daemon, records the daemon PID via
+  `/proc`, SIGKILLs the parent's process group, and asserts the
+  same daemon PID is still alive and responsive. Linux-only.
+
+## Real-tmux smoke test summary
+
+Beyond the automated acceptance suite, a manual end-to-end pass
+against a disposable tmux 3.4 server exercised all 15 scenarios
+below. Every scenario behaved as the spec requires:
+
+1. `list` — returns `{"panes": ["%0"]}`
+2. `snapshot` — visible text + opaque base64 token
+3. `snapshot --history-lines 5` — scrollback + visible distinctly
+4. `snapshot → text → wait --for sentinel` (exit 0) — parses
+   `exit_code: 0` and full `matched` literal
+5. Same pattern with exit 42 — parses `exit_code: 42` correctly
+6. `snapshot → text → read --after` — returns only the delta
+7. `wait --for regex` with `(?m)^READY-MARKER$` against
+   CRLF-terminated output — matches (validates the §9.6 CR-strip
+   fix end-to-end)
+8. `wait --for quiescence` — returns immediately when already idle
+9. `key C-c` — sends the keystroke, exits 0 with no stdout
+10. `PANE_NOT_FOUND` for `%999`
+11. `MISSING_AFTER` for `read` without `--after`
+12. `INVALID_AFTER` for a garbage token
+13. `TIMEOUT` for a sentinel that never appears
+14. §7.5 precedence — `PANE_NOT_FOUND` wins over `INVALID_AFTER`
+    when both could apply
+15. Daemon auto-spawn was transparent; `tpctl daemon` was never
+    invoked manually yet every subsequent call connected.
+
+The only divergence from spec-as-written was §6.2 global flag
+position, which the smoke test caught and which is now tracked
+above as a known deviation.
 
 ## Lessons learned
 
