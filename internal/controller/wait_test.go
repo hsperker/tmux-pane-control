@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"regexp"
 	"testing"
 	"time"
 
@@ -136,6 +137,75 @@ func TestWait_SentinelTokenValidation(t *testing.T) {
 		if cerr.Code != domain.ErrInvalidArgs {
 			t.Fatalf("token=%q: code = %q", bad, cerr.Code)
 		}
+	}
+}
+
+func TestWait_Regex_AlreadyBuffered(t *testing.T) {
+	s := store.New(1024)
+	tok := s.NewToken("%42")
+	s.Append("%42", []byte("server READY at port 8080"))
+	re := regexp.MustCompile(`READY`)
+	resp, err := Wait(context.Background(), s, WaitRequest{
+		PaneID: "%42", After: tok, Timeout: time.Second,
+		Mode: WaitModeRegex, Regex: re,
+	})
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if resp.Result != domain.WaitRegex {
+		t.Fatalf("result = %q", resp.Result)
+	}
+	if resp.Matched == nil || *resp.Matched != "READY" {
+		t.Fatalf("matched = %v", resp.Matched)
+	}
+	if resp.ExitCode != nil {
+		t.Fatalf("exit_code must be nil for regex, got %v", *resp.ExitCode)
+	}
+}
+
+func TestWait_Regex_ArrivesLater(t *testing.T) {
+	s := store.New(1024)
+	tok := s.NewToken("%42")
+	re := regexp.MustCompile(`[A-Z]+-[0-9]+`)
+	done := make(chan *domain.WaitResponse, 1)
+	go func() {
+		r, err := Wait(context.Background(), s, WaitRequest{
+			PaneID: "%42", After: tok, Timeout: 2 * time.Second,
+			Mode: WaitModeRegex, Regex: re,
+		})
+		if err == nil {
+			done <- r
+		}
+	}()
+	time.Sleep(30 * time.Millisecond)
+	s.Append("%42", []byte("ident=FOO-123 ok"))
+	select {
+	case r := <-done:
+		if *r.Matched != "FOO-123" {
+			t.Fatalf("matched = %q", *r.Matched)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("regex match did not land")
+	}
+}
+
+func TestWait_Regex_NoAnchorNoDotall(t *testing.T) {
+	// Spec §9.6: no implicit anchoring; `.` does not match newline
+	// by default — verified via the pure matcher tests. Here we just
+	// confirm Wait relays `(?s)` correctly when the caller adds it.
+	s := store.New(1024)
+	tok := s.NewToken("%42")
+	s.Append("%42", []byte("a\nb"))
+	re := regexp.MustCompile(`(?s)a.b`)
+	resp, err := Wait(context.Background(), s, WaitRequest{
+		PaneID: "%42", After: tok, Timeout: time.Second,
+		Mode: WaitModeRegex, Regex: re,
+	})
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if *resp.Matched != "a\nb" {
+		t.Fatalf("matched = %q", *resp.Matched)
 	}
 }
 
