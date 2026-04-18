@@ -106,9 +106,12 @@ func TestWait_MissingAfter(t *testing.T) {
 	}
 }
 
-func TestWait_InvalidAfterWrongPane(t *testing.T) {
+func TestWait_InvalidAfterWrongPane_BothExist(t *testing.T) {
+	// Both panes exist → token-for-wrong-pane surfaces as
+	// INVALID_AFTER (spec §7.5 precedence).
 	s := store.New(1024)
 	tok := s.NewToken("%42")
+	s.Ensure("%43")
 	_, err := Wait(context.Background(), s, WaitRequest{
 		PaneID: "%43", After: tok, Timeout: time.Second,
 		Mode: WaitModeSentinel, SentinelToken: "run1",
@@ -119,6 +122,24 @@ func TestWait_InvalidAfterWrongPane(t *testing.T) {
 	}
 	if cerr.Code != domain.ErrInvalidAfter {
 		t.Fatalf("code = %q", cerr.Code)
+	}
+}
+
+func TestWait_PaneNotFoundWhenTargetMissing(t *testing.T) {
+	// Target pane doesn't exist → PANE_NOT_FOUND (spec §7.5 wins
+	// over INVALID_AFTER even though the token is also wrong).
+	s := store.New(1024)
+	tok := s.NewToken("%42")
+	_, err := Wait(context.Background(), s, WaitRequest{
+		PaneID: "%43", After: tok, Timeout: time.Second,
+		Mode: WaitModeSentinel, SentinelToken: "run1",
+	})
+	var cerr *domain.ErrorResponse
+	if !errors.As(err, &cerr) {
+		t.Fatalf("want ErrorResponse, got %v", err)
+	}
+	if cerr.Code != domain.ErrPaneNotFound {
+		t.Fatalf("code = %q want PANE_NOT_FOUND", cerr.Code)
 	}
 }
 
@@ -211,17 +232,25 @@ func TestWait_Regex_NoAnchorNoDotall(t *testing.T) {
 
 func TestWait_Quiescence_ImmediatelySatisfied(t *testing.T) {
 	// Spec §9.6: if the pane is already quiet for at least --ms
-	// when the wait is registered, succeed immediately.
+	// when the wait is registered, succeed IMMEDIATELY. We verify
+	// "immediate" by measuring wall-clock elapsed time: it must be
+	// well under the quiet window (e.g. we waited 60ms beyond the
+	// checkpoint but Wait should return in <20ms regardless of the
+	// quiet window value).
 	s := store.New(1024)
 	tok := s.NewToken("%42")
-	// Ensure the checkpoint mint time is older than the quiet window.
 	time.Sleep(60 * time.Millisecond)
+	start := time.Now()
 	resp, err := Wait(context.Background(), s, WaitRequest{
 		PaneID: "%42", After: tok, Timeout: time.Second,
 		Mode: WaitModeQuiescence, QuietWindow: 50 * time.Millisecond,
 	})
+	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
+	}
+	if elapsed > 25*time.Millisecond {
+		t.Fatalf("wait took %v, expected <25ms (not 'immediate')", elapsed)
 	}
 	if resp.Result != domain.WaitQuiescence {
 		t.Fatalf("result = %q", resp.Result)
