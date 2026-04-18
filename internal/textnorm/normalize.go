@@ -32,6 +32,12 @@ func Normalize(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+// StripANSI removes ANSI escape sequences but preserves newlines,
+// carriage returns, and trailing whitespace. Spec §9.6 requires this
+// representation for wait match input (ANSI-stripped only, unlike the
+// full §8.3 normalization used for text-bearing JSON fields).
+func StripANSI(s string) string { return stripANSI(s) }
+
 // stripANSI removes ANSI escape sequences. It's a small hand-rolled
 // state machine to keep the package dependency-free. The grammar
 // covered:
