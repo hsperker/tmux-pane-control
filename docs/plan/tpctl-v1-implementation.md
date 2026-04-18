@@ -31,6 +31,11 @@ the last one left off.
 ## Conventions
 
 - **Go module path:** `github.com/hsperker/tmux-pane-control`.
+- **Go version:** target the latest stable Go release at the time slice 1
+  lands; record it in `go.mod` and treat that as the project floor.
+- **Slice is "done" when:** its tests pass on trunk and its manual
+  validation command succeeds. Tick the checkbox in the same PR that
+  lands the slice.
 - **Commit style:** imperative subject, optional prefix
   (`test:`, `feat:`, `refactor:`, `plan:`, `docs:`, `spec:`).
 - **Branches:** one short-lived branch per slice, named
@@ -107,6 +112,8 @@ green test suite.
 
 1. Read `docs/specs/tpctl-v1.md` for the normative contract.
 2. Read this file. The first unchecked slice above is the one to start.
-3. Cross-check with `git log --oneline` and the remote branches / PRs in
-   case the checkboxes have drifted; if they have, fix the plan first.
+3. Cross-check the checkboxes against reality: run `go test ./...` and the
+   validation commands of the most recently ticked slices. If a ticked
+   slice fails its check, the plan has drifted — fix the plan (or the
+   code) before starting new work.
 4. Cut a `slice-NN-<short-name>` branch and proceed.
