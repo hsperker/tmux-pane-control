@@ -102,14 +102,25 @@ func (a *Adapter) SendText(id domain.PaneID, text string, enter bool) error {
 }
 
 // SendKeys sends the listed key tokens via `tmux send-keys`. Tokens
-// are treated as data; the `--` guard stops tmux from parsing them as
-// flags. Invalid tokens fail with ErrInvalidKey.
+// are treated as data per spec §9.5; the `--` guard stops tmux from
+// parsing them as flags, and `;` tokens are escaped as `\;` so
+// tmux's argv-level command separator does NOT split the
+// invocation into two commands. Invalid tokens fail with
+// ErrInvalidKey.
 func (a *Adapter) SendKeys(id domain.PaneID, keys []string) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("send-keys: no keys")
 	}
 	args := []string{"send-keys", "-t", string(id), "--"}
-	args = append(args, keys...)
+	for _, k := range keys {
+		if k == ";" {
+			// tmux treats an argv element equal to ";" as a
+			// command separator. Escape it so it reaches
+			// send-keys as a literal semicolon token.
+			k = `\;`
+		}
+		args = append(args, k)
+	}
 	var stderr bytes.Buffer
 	c := a.cmd(args...)
 	c.Stderr = &stderr
