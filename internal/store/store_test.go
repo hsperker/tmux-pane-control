@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/hsperker/tmux-pane-control/internal/domain"
 )
@@ -74,7 +75,7 @@ func TestStore_ReadDelta(t *testing.T) {
 func TestStore_UnknownPane(t *testing.T) {
 	s := New(16)
 	// Forge a properly-instance-scoped token for an unregistered pane.
-	tok := encodeToken(s.instance, "%99", 0)
+	tok := encodeToken(s.instance, "%99", 0, time.Now())
 	_, _, err := s.Read("%99", tok)
 	if !errors.Is(err, ErrPaneUnknown) {
 		t.Fatalf("want ErrPaneUnknown, got %v", err)
@@ -103,9 +104,15 @@ func TestStore_ReadEmpty(t *testing.T) {
 	if len(out) != 0 {
 		t.Fatalf("got %q", out)
 	}
-	// next should be identical to tok because no output was appended.
-	if next != tok {
-		t.Fatalf("next changed unexpectedly: %q → %q", tok, next)
+	// Tokens are opaque: the string may differ (timestamps advance),
+	// but a re-read from the returned next must still be empty and
+	// point at the same stream offset.
+	out2, _, err := s.Read("%42", next)
+	if err != nil {
+		t.Fatalf("Read2: %v", err)
+	}
+	if len(out2) != 0 {
+		t.Fatalf("re-read not empty: %q", out2)
 	}
 }
 

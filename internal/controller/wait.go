@@ -22,15 +22,14 @@ const (
 )
 
 // WaitRequest bundles the parameters accepted by `tpctl wait`. Not
-// all fields are meaningful for every mode: SentinelToken is for
-// sentinel mode only (analogous fields for regex/quiescence land in
-// later slices).
+// all fields are meaningful for every mode.
 type WaitRequest struct {
 	PaneID        domain.PaneID
 	After         domain.Token
 	Timeout       time.Duration
 	Mode          WaitMode
-	SentinelToken string
+	SentinelToken string        // sentinel: required
+	QuietWindow   time.Duration // quiescence: required
 }
 
 // Wait implements `tpctl wait` (spec §9.6).
@@ -63,6 +62,14 @@ func Wait(ctx context.Context, st *store.Store, req WaitRequest) (*domain.WaitRe
 				Message: err.Error(),
 			}
 		}
+	case WaitModeQuiescence:
+		if req.QuietWindow <= 0 {
+			return nil, &domain.ErrorResponse{
+				PaneID:  string(req.PaneID),
+				Code:    domain.ErrInvalidArgs,
+				Message: "quiescence mode requires a positive --ms",
+			}
+		}
 	default:
 		return nil, &domain.ErrorResponse{
 			PaneID:  string(req.PaneID),
@@ -77,18 +84,24 @@ func Wait(ctx context.Context, st *store.Store, req WaitRequest) (*domain.WaitRe
 	sig, cancel := st.Watch(req.PaneID)
 	defer cancel()
 
-	timer := time.NewTimer(req.Timeout)
-	defer timer.Stop()
+	timeout := time.NewTimer(req.Timeout)
+	defer timeout.Stop()
+
+	// Decode the checkpoint mint time for quiescence's formula.
+	checkpointAt, _ := st.TokenTime(req.After)
 
 	for {
+		// Validate token + pane each iteration so a Forget (pane
+		// destroyed) surfaces as PANE_NOT_FOUND even if already
+		// buffered bytes still match. The current cost is low.
 		bytes, next, err := st.Read(req.PaneID, req.After)
 		if err != nil {
 			return nil, mapWaitStoreError(req.PaneID, err)
 		}
 
-		stripped := textnorm.StripANSI(string(bytes))
 		switch req.Mode {
 		case WaitModeSentinel:
+			stripped := textnorm.StripANSI(string(bytes))
 			if m, ok := waiter.MatchSentinel([]byte(stripped), req.SentinelToken); ok {
 				return &domain.WaitResponse{
 					PaneID:   req.PaneID,
@@ -98,12 +111,49 @@ func Wait(ctx context.Context, st *store.Store, req WaitRequest) (*domain.WaitRe
 					ExitCode: domain.NewInt(m.ExitCode),
 				}, nil
 			}
+		case WaitModeQuiescence:
+			// Spec §9.6: quiescence at time `now` iff
+			// now - max(T_checkpoint, T_last_if_present) >= ms.
+			ref := checkpointAt
+			if la, ok := st.LastAppend(req.PaneID); ok && la.After(ref) {
+				ref = la
+			}
+			elapsed := time.Since(ref)
+			if elapsed >= req.QuietWindow {
+				return &domain.WaitResponse{
+					PaneID: req.PaneID,
+					Next:   st.NewToken(req.PaneID),
+					Result: domain.WaitQuiescence,
+				}, nil
+			}
+			// Wake up again at most when the quiet window would be
+			// satisfied; re-check earlier if new output arrives.
+			remaining := req.QuietWindow - elapsed
+			quietTimer := time.NewTimer(remaining)
+			select {
+			case <-sig:
+				quietTimer.Stop()
+				continue
+			case <-quietTimer.C:
+				// Re-check the formula; new activity may have
+				// landed between the timer expiring and now.
+				continue
+			case <-timeout.C:
+				quietTimer.Stop()
+				return nil, &domain.ErrorResponse{
+					PaneID:  string(req.PaneID),
+					Code:    domain.ErrTimeout,
+					Message: "wait timed out",
+				}
+			case <-ctx.Done():
+				quietTimer.Stop()
+				return nil, ctx.Err()
+			}
 		}
 
 		select {
 		case <-sig:
-			// New output or pane forgotten; re-evaluate on next loop.
-		case <-timer.C:
+		case <-timeout.C:
 			return nil, &domain.ErrorResponse{
 				PaneID:  string(req.PaneID),
 				Code:    domain.ErrTimeout,

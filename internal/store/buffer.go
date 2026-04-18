@@ -7,6 +7,8 @@
 // below the retained window fail with an evicted-past signal.
 package store
 
+import "time"
+
 // Buffer is a per-pane byte ring. It is not goroutine-safe; Store
 // serializes access.
 type Buffer struct {
@@ -17,6 +19,10 @@ type Buffer struct {
 	// Invariant: 0 <= end-start <= capacity.
 	start int64
 	end   int64
+	// lastAppend records the wall-clock time of the most recent
+	// Append call that actually added bytes. Zero value means no
+	// append has happened yet. Used by spec §9.6 quiescence.
+	lastAppend time.Time
 }
 
 // NewBuffer returns a Buffer that retains at most capacity bytes.
@@ -41,13 +47,19 @@ func (b *Buffer) Start() int64 { return b.start }
 // Len returns the number of bytes currently retained.
 func (b *Buffer) Len() int { return int(b.end - b.start) }
 
+// LastAppend returns the wall-clock time of the most recent Append
+// that added bytes. The zero value means no append has occurred.
+func (b *Buffer) LastAppend() time.Time { return b.lastAppend }
+
 // Append writes p into the ring, evicting oldest bytes as needed.
 // It advances end by len(p) and may advance start by up to len(p).
+// The lastAppend timestamp is set to time.Now when bytes are added.
 func (b *Buffer) Append(p []byte) {
 	n := len(p)
 	if n == 0 {
 		return
 	}
+	b.lastAppend = time.Now()
 	// If p is larger than the capacity, the leading bytes are
 	// immediately evicted. Advance end for those bytes and drop them
 	// from p before writing; this preserves the ring invariant that

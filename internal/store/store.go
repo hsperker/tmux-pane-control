@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/hsperker/tmux-pane-control/internal/domain"
 )
@@ -143,12 +144,40 @@ func (s *Store) Watch(id domain.PaneID) (<-chan struct{}, func()) {
 
 // NewToken returns a token pointing at the current stream head for
 // the given pane (i.e. snapshot's "next"). The buffer is created if
-// missing so future Append calls are recorded.
+// missing so future Append calls are recorded. The token records the
+// current wall-clock time for §9.6 quiescence.
 func (s *Store) NewToken(id domain.PaneID) domain.Token {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	b := s.bufferLocked(id)
-	return encodeToken(s.instance, id, b.End())
+	return encodeToken(s.instance, id, b.End(), time.Now())
+}
+
+// TokenTime decodes a token (without validating pane/instance) and
+// returns its mint time. Used by the §9.6 quiescence evaluator.
+func (s *Store) TokenTime(after domain.Token) (time.Time, error) {
+	tp, err := decodeToken(after)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(0, tp.T), nil
+}
+
+// LastAppend returns the wall-clock time of the most recent Append
+// for this pane. ok=false if the pane is unknown or no append has
+// happened.
+func (s *Store) LastAppend(id domain.PaneID) (time.Time, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.bufs[id]
+	if !ok {
+		return time.Time{}, false
+	}
+	la := b.LastAppend()
+	if la.IsZero() {
+		return time.Time{}, false
+	}
+	return la, true
 }
 
 // Read returns the bytes appended since the token's offset and a new
@@ -180,5 +209,5 @@ func (s *Store) Read(id domain.PaneID, after domain.Token) ([]byte, domain.Token
 	if !ok {
 		return nil, "", ErrTokenEvicted
 	}
-	return out, encodeToken(s.instance, id, end), nil
+	return out, encodeToken(s.instance, id, end, time.Now()), nil
 }
