@@ -869,21 +869,74 @@ tpctl wait --pane %42 --after r_200 --for quiescence --ms 250 --timeout-ms 3000
 
 ## 17. Acceptance criteria
 
-An implementation is acceptable for v1 if it satisfies all of the following:
+An implementation is acceptable for v1 if it satisfies all of the following.
 
-1. `snapshot` returns visible screen text and a usable checkpoint token.
-2. `snapshot --history-lines N` returns `scrollback_text` and `text` distinctly.
-3. `read --after TOKEN` never rereads pre-token output.
-4. `read` may return empty `text` and still succeed.
-5. `wait --after TOKEN` cannot miss fast output that occurs after the checkpoint.
-6. `wait` requires `--timeout-ms`.
-7. `wait` supports exactly: `sentinel`, `regex`, `quiescence`.
-8. `wait` always returns `next` on success.
-9. `text` and `key` emit no success payload.
-10. `list` returns only `%pane_id` strings.
-11. command-level failures are structured JSON on `stdout`.
-12. runtime/tool failures go to `stderr`.
-13. the implementation follows the architectural patterns in section 10.
+### Core commands
+
+1. `list` returns only `%pane_id` strings.
+2. `snapshot` returns visible screen text and a usable checkpoint token.
+3. `snapshot --history-lines N` returns `scrollback_text` and `text` distinctly.
+4. `snapshot.text` reflects the pane's rendered visible screen rows, not reconstructed logical shell lines.
+5. `read --after TOKEN` never rereads pre-token output.
+6. `read` may return empty `text` and still succeed.
+
+### Checkpoint tokens
+
+7. Checkpoint tokens are opaque, pane-scoped, and controller-lifetime scoped.
+8. `read --after TOKEN` fails with `INVALID_AFTER` when the token is wrong for the pane, refers to evicted output, or was issued by a prior controller instance.
+9. `wait --after TOKEN` fails with `INVALID_AFTER` under the same conditions.
+
+### Stream retention
+
+10. The retained output stream is bounded to 1 MiB per pane.
+11. Eviction of retained output invalidates checkpoints that point before the new retained start.
+
+### Wait contract
+
+12. `wait` requires `--timeout-ms`.
+13. `wait` supports exactly: `sentinel`, `regex`, `quiescence`.
+14. `wait --after TOKEN` considers already-buffered post-token output at registration time, not just future arrivals.
+15. `wait --after TOKEN` cannot miss fast output that occurs after the checkpoint.
+16. `wait` always returns `next` on success.
+17. Multiple concurrent `wait`s on the same pane are allowed and evaluated independently.
+
+### Matching semantics
+
+18. `wait --for regex` uses RE2.
+19. Regex and sentinel matching operate on ANSI-stripped, `\n`-normalized post-checkpoint text.
+20. Matching is performed against one continuous text buffer with no implicit anchoring.
+21. `wait --for sentinel --token TOKEN` matches the structured form `__DONE__:<token>:<exit-code>`.
+22. On sentinel success, the response includes both `matched` and `exit_code` (integer).
+23. `wait --for quiescence` treats any appended byte after the checkpoint as activity.
+24. `wait --for quiescence` may succeed immediately if already satisfied at registration time.
+
+### Text representation
+
+25. `snapshot.text`, `snapshot.scrollback_text`, and `read.text` are all: ANSI-stripped, `\n`-normalized, trailing-whitespace-trimmed per line, and trailing-blank-lines-trimmed.
+
+### Input commands
+
+26. `text` and `key` do not return until tmux has acknowledged processing the send command.
+27. `text` and `key` emit no success payload.
+28. `text` and `key` produce no stdout at all on success.
+29. `key` uses tmux's `send-keys` key vocabulary; invalid tokens fail cleanly with a structured JSON error.
+30. `key` tokens are treated as data, never as tmux command syntax.
+
+### Controller model
+
+31. There is exactly one controller per tmux server.
+32. The CLI auto-spawns a controller on demand when none is running for the target server.
+33. An explicit `tpctl daemon` subcommand is provided.
+
+### Errors
+
+34. Command-level failures emit structured JSON on `stdout` with a nonzero exit code.
+35. Runtime or controller failures emit diagnostics on `stderr` with a nonzero exit code.
+36. The canonical error codes `MISSING_AFTER`, `INVALID_AFTER`, `PANE_NOT_FOUND`, and `TIMEOUT` are used where applicable.
+
+### Architecture
+
+37. The implementation follows the architectural patterns in §10.
 
 ---
 
