@@ -20,7 +20,8 @@ func TestSnapshot_VisibleScreen(t *testing.T) {
 	if resp.PaneID != "%42" {
 		t.Fatalf("pane_id = %q", resp.PaneID)
 	}
-	if resp.Text != "hello\n$ " {
+	// Normalization trims the trailing space after "$" (spec §8.3).
+	if resp.Text != "hello\n$" {
 		t.Fatalf("text = %q", resp.Text)
 	}
 	if resp.Next == "" {
@@ -28,6 +29,24 @@ func TestSnapshot_VisibleScreen(t *testing.T) {
 	}
 	if resp.ScrollbackText != nil {
 		t.Fatalf("scrollback_text must be absent, got %q", *resp.ScrollbackText)
+	}
+}
+
+func TestSnapshot_NormalizesText(t *testing.T) {
+	// Spec §8.3: ANSI-stripped, CR removed, trailing whitespace per
+	// line trimmed, trailing blank lines trimmed.
+	fake := &tmuxctl.Fake{
+		Panes: []domain.PaneID{"%42"},
+		Screens: map[domain.PaneID]string{
+			"%42": "\x1b[31mhello\x1b[0m  \r\n$  \n\n\n",
+		},
+	}
+	resp, err := Snapshot(fake, &CounterIssuer{}, "%42")
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if resp.Text != "hello\n$" {
+		t.Fatalf("text = %q, want %q", resp.Text, "hello\n$")
 	}
 }
 
