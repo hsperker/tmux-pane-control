@@ -180,6 +180,22 @@ Behavior:
 
 For v1, only zero vs nonzero matters.
 
+### 7.5 Error code taxonomy
+
+v1 defines a small canonical set of error codes for common command-level failures. Implementations **must** use these codes where applicable:
+
+- `MISSING_AFTER` — a command that requires `--after` was invoked without one
+- `INVALID_AFTER` — the supplied checkpoint token is not valid for the target pane or is no longer retained
+- `PANE_NOT_FOUND` — the target pane does not exist
+- `TIMEOUT` — `wait` exceeded its `--timeout-ms` before its condition matched
+
+Implementations **may** emit additional error codes for other command-level failures (for example, regex compile failure, invalid argument combinations, controller unavailable, pane closed mid-operation), but must preserve the standard JSON error shape defined in §7.2 and §8.
+
+Rule of thumb:
+
+- canonical cases **must** use the canonical names above
+- non-canonical failures **may** use implementation-defined codes
+
 ---
 
 ## 8. JSON response design
