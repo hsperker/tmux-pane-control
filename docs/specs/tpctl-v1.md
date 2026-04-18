@@ -306,6 +306,12 @@ When history is requested:
 - `scrollback_text` = prior out-of-view lines included from scrollback
 - `text` = current visible screen
 
+Rules:
+
+- default when omitted: no history; `scrollback_text` is not included
+- `N = 0` is valid and means "history mode requested, zero lines"; `scrollback_text: ""` is included
+- v1 does not impose a spec-level maximum on `N`; implementations may cap it, and tmux's own scrollback buffer is the practical ceiling
+
 ### Field presence
 
 - `text` is always present; if the pane is empty, `text: ""`
@@ -533,9 +539,9 @@ where:
 
 - `__DONE__:` is the fixed prefix
 - `<token>` is the literal value passed via `--token`
-- `<exit-code>` is one or more decimal digits
+- `<exit-code>` matches `[0-9]+` — unsigned decimal digits only, leading zeros allowed
 
-On success, the response includes the full `matched` sentinel and the parsed `exit_code` as an integer.
+On success, the response includes the full `matched` sentinel and the parsed `exit_code` as an integer (so `__DONE__:abc123:007` yields `exit_code: 7`). v1 does not enforce an upper bound on `exit_code` at the matcher level; shell exit codes are conventionally 0–255, and values beyond that are a caller concern. A signed form such as `__DONE__:abc123:-1` is not a sentinel match.
 
 Constraints on `--token` values in v1:
 
@@ -553,6 +559,8 @@ tpctl wait --pane %42 --after TOKEN --for regex --pattern "READY" --timeout-ms 5
 Regex mode uses **RE2** (the Go `regexp` flavor). RE2 does not support backreferences or lookaround; this is intentional for bounded-time matching.
 
 No implicit anchoring is applied. The pattern is evaluated against the full post-checkpoint text buffer. By default `.` does not match newline; use `(?s)` to enable dotall if needed.
+
+On success, `matched` is the whole match (group 0 equivalent). v1 does not expose submatches or capture groups in the response; callers that need structured extraction can re-run a regex client-side against `matched` or use sentinel mode.
 
 #### Quiescence mode
 
@@ -600,6 +608,7 @@ Consequences:
 - an agent may have any number of concurrent `wait`s outstanding on the same pane, with different checkpoint tokens, modes, and patterns
 - `wait`s compose freely with concurrent `read` calls on the same pane
 - each `wait` is evaluated independently and may succeed or time out on its own
+- a single output append may satisfy zero, one, or many pending `wait`s on the same pane; there is no ordering guarantee between their responses
 - `text` and `key` are serialized by the single-writer controller loop, but they do not block or cancel registered `wait`s
 
 ### Success example: sentinel
