@@ -69,22 +69,43 @@ Targeting a specific tmux server: `--tmux-socket PATH` or
 
 ## Agent usage
 
-The core pattern is **snapshot → send → wait**:
+Every command in the API gets exercised in an end-to-end session.
+
+### 1. Discover panes (`list`)
 
 ```bash
-# 1. Bootstrap: get a token anchored to "now"
-SNAP=$(tpctl snapshot --pane %42)
+tpctl list
+# {"panes":["%0","%42","%43"]}
+
+PANE=$(tpctl list | jq -r '.panes[0]')
+```
+
+### 2. Bootstrap observation (`snapshot`)
+
+```bash
+# Visible screen only — cheap, returns a checkpoint token
+SNAP=$(tpctl snapshot --pane "$PANE")
 TOKEN=$(echo "$SNAP" | jq -r .next)
 
-# 2. Send the command, appending a sentinel so the exit code is
-#    visible to the wait
-tpctl text --pane %42 \
+# Or include scrollback for richer context at session start
+tpctl snapshot --pane "$PANE" --history-lines 200 \
+  | jq -r '.scrollback_text, .text'
+```
+
+### 3. Run a command race-free (`text` + `wait --for sentinel`)
+
+```bash
+# Snapshot first to anchor the wait
+SNAP=$(tpctl snapshot --pane "$PANE")
+TOKEN=$(echo "$SNAP" | jq -r .next)
+
+# Send the command plus a sentinel that carries the exit code
+tpctl text --pane "$PANE" \
   'make test; printf "__DONE__:run1:%d\n" $?' --enter
 
-# 3. Wait for the sentinel. Times out after 30s. On success, the
-#    response includes the full matched literal and the exit code
-#    as an integer.
-tpctl wait --pane %42 --after "$TOKEN" \
+# Wait for __DONE__:run1:<N>. On success the response includes
+# the full matched literal and exit_code as an integer.
+tpctl wait --pane "$PANE" --after "$TOKEN" \
   --for sentinel --token run1 --timeout-ms 30000
 ```
 
@@ -92,6 +113,60 @@ Why it's race-free: `text` doesn't return until tmux has ack'd the
 send, and `wait --after TOKEN` scans **everything** appended after
 the token — including output that arrived while the wait was being
 registered. Fast output can't slip through.
+
+### 4. Drive a TUI (`key` + `wait --for quiescence`)
+
+```bash
+SNAP=$(tpctl snapshot --pane "$PANE")
+TOKEN=$(echo "$SNAP" | jq -r .next)
+
+# Escape, then /pods, then Enter — tmux key names
+tpctl key --pane "$PANE" Escape "/" "pods" Enter
+
+# Wait for the pane to stop producing output for 250ms
+tpctl wait --pane "$PANE" --after "$TOKEN" --for quiescence \
+  --ms 250 --timeout-ms 3000
+
+# Now read the settled screen
+tpctl snapshot --pane "$PANE"
+```
+
+### 5. Match loose patterns (`wait --for regex`)
+
+```bash
+SNAP=$(tpctl snapshot --pane "$PANE")
+TOKEN=$(echo "$SNAP" | jq -r .next)
+
+tpctl text --pane "$PANE" "kubectl get pods -w" --enter
+
+# RE2 syntax; no submatches in the response, just the whole match
+tpctl wait --pane "$PANE" --after "$TOKEN" \
+  --for regex --pattern '^[a-z0-9-]+\s+Running' --timeout-ms 60000
+```
+
+### 6. Tail incrementally (`read`)
+
+```bash
+TOKEN=$(tpctl snapshot --pane "$PANE" | jq -r .next)
+while sleep 1; do
+  OUT=$(tpctl read --pane "$PANE" --after "$TOKEN")
+  echo "$OUT" | jq -r .text
+  TOKEN=$(echo "$OUT" | jq -r .next)
+done
+```
+
+`read` returns empty `text` when nothing new has appeared; it's
+always safe to call.
+
+### 7. Run the controller explicitly (`daemon`)
+
+Agents normally don't need this — the controller auto-spawns on
+first use. But if you want to run it in the foreground for
+debugging or under a supervisor:
+
+```bash
+tpctl daemon --tmux-socket /path/to/tmux.sock
+```
 
 ### Error handling cheat sheet
 
@@ -109,33 +184,7 @@ nonzero exit. Agents should check stdout first — if it parses as
 JSON with a `code` field, it's a command-level error; otherwise
 check stderr for runtime diagnostics.
 
-### Other idioms
-
-**Wait for a TUI to settle, then snapshot:**
-
-```bash
-SNAP=$(tpctl snapshot --pane %42)
-TOKEN=$(echo "$SNAP" | jq -r .next)
-tpctl key --pane %42 Escape "/" "pods" Enter
-tpctl wait --pane %42 --after "$TOKEN" --for quiescence \
-  --ms 250 --timeout-ms 3000
-tpctl snapshot --pane %42   # now read the settled screen
-```
-
-**Tail output incrementally:**
-
-```bash
-TOKEN=$(tpctl snapshot --pane %42 | jq -r .next)
-while sleep 1; do
-  OUT=$(tpctl read --pane %42 --after "$TOKEN")
-  echo "$OUT" | jq -r .text
-  TOKEN=$(echo "$OUT" | jq -r .next)
-done
-```
-
 ## Human usage
-
-Most human use cases are one-shot inspection or scripted automation:
 
 ```bash
 # What panes exist?
@@ -145,14 +194,47 @@ tpctl list
 tpctl snapshot --pane %0 | jq -r .text
 
 # Peek at the last 40 lines of scrollback too
-tpctl snapshot --pane %0 --history-lines 40 | jq -r '.scrollback_text, .text'
+tpctl snapshot --pane %0 --history-lines 40 \
+  | jq -r '.scrollback_text, .text'
+
+# See what's new since the last peek (save the token between runs)
+TOKEN=$(tpctl snapshot --pane %0 | jq -r .next)
+# ... time passes, pane has produced output ...
+tpctl read --pane %0 --after "$TOKEN" | jq -r .text
 
 # Type something into a pane without stealing focus
 tpctl text --pane %0 "date" --enter
 
 # Press Escape-then-:q to quit a vim pane
 tpctl key --pane %0 Escape ":" "q" Enter
+
+# Block until a pane prints "READY" (e.g. in a shell script that
+# waits for a dev server to come up before running smoke tests)
+TOKEN=$(tpctl snapshot --pane %0 | jq -r .next)
+tpctl wait --pane %0 --after "$TOKEN" \
+  --for regex --pattern 'READY' --timeout-ms 60000
+
+# Run a long build in a pane and block this script until it finishes,
+# with the build's exit code surfaced as JSON
+TOKEN=$(tpctl snapshot --pane %0 | jq -r .next)
+tpctl text --pane %0 'make release; printf "__DONE__:build:%d\n" $?' --enter
+tpctl wait --pane %0 --after "$TOKEN" \
+  --for sentinel --token build --timeout-ms 600000 | jq '.exit_code'
+
+# Wait for a busy pane to go idle for a quarter-second before
+# inspecting it
+TOKEN=$(tpctl snapshot --pane %0 | jq -r .next)
+tpctl wait --pane %0 --after "$TOKEN" \
+  --for quiescence --ms 250 --timeout-ms 5000
+tpctl snapshot --pane %0 | jq -r .text
+
+# Start the controller in the foreground (usually unnecessary —
+# auto-spawn handles this — but useful for debugging)
+tpctl daemon
 ```
+
+The JSON output is compact and line-oriented, so it plays well with
+`jq`, `grep`, and shell pipelines.
 
 The JSON output is compact and line-oriented, so it plays well with
 `jq`, `grep`, and shell pipelines.
