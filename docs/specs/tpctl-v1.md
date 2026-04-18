@@ -186,8 +186,17 @@ v1 defines a small canonical set of error codes for common command-level failure
 
 - `MISSING_AFTER` — a command that requires `--after` was invoked without one
 - `INVALID_AFTER` — the supplied checkpoint token is not valid for the target pane or is no longer retained
-- `PANE_NOT_FOUND` — the target pane does not exist
+- `PANE_NOT_FOUND` — the target pane does not exist at dispatch time
+- `PANE_CLOSED` — the pane existed when the operation began but was destroyed before it could complete (see §11.9)
 - `TIMEOUT` — `wait` exceeded its `--timeout-ms` before its condition matched
+
+### Precedence
+
+When multiple canonical conditions could apply, use this order:
+
+1. a pending `wait` observes its pane being destroyed → `PANE_CLOSED`
+2. a command is dispatched for a pane that no longer exists → `PANE_NOT_FOUND`
+3. a token is invalid **and** the pane lookup already fails → prefer `PANE_NOT_FOUND` over `INVALID_AFTER`
 
 Implementations **may** emit additional error codes for other command-level failures (for example, regex compile failure, invalid argument combinations, controller unavailable, pane closed mid-operation), but must preserve the standard JSON error shape defined in §7.2 and §8.
 
@@ -717,6 +726,33 @@ Explicitly out of scope for v1:
 - persistence across controller restarts
 - configurable retention exposed in the public API
 
+### 11.9 Pane lifecycle
+
+Panes can disappear at any time (user closes them, their process exits, `kill-pane`, etc.). The controller handles this as follows:
+
+- **Pending `wait` observes destruction** — the wait fails with `PANE_CLOSED` (see §7.5). The pane existed when the wait was registered but ceased to exist before the wait could complete.
+- **New command for a missing pane** — `read`, `snapshot`, `wait`, `text`, and `key` fail with `PANE_NOT_FOUND` when the pane does not exist at dispatch time.
+- **Retained stream on destruction** — the pane's retained output stream is dropped immediately when the pane is destroyed. Subsequent commands for that `%pane_id` fail with `PANE_NOT_FOUND`, not `INVALID_AFTER`.
+
+Example `PANE_CLOSED` failure:
+
+```json
+{
+  "pane_id": "%42",
+  "code": "PANE_CLOSED",
+  "message": "pane was destroyed while wait was pending"
+}
+```
+
+#### tmux server restart
+
+A tmux server restart is not a pane-level event. It is a controller-level event:
+
+- the controller's tmux connection breaks
+- the controller treats this as a runtime failure (§7.3) and may exit or attempt to reconnect
+- on controller restart, all previously issued checkpoint tokens are invalidated (§4.3)
+- `PANE_CLOSED` is **not** used for server-wide restart scenarios — it is reserved for pane-level destruction within an otherwise live controller
+
 ---
 
 ## 12. Suggested internal structure
@@ -928,15 +964,20 @@ An implementation is acceptable for v1 if it satisfies all of the following.
 32. The CLI auto-spawns a controller on demand when none is running for the target server.
 33. An explicit `tpctl daemon` subcommand is provided.
 
+### Pane lifecycle
+
+34. A pending `wait` whose pane is destroyed fails with `PANE_CLOSED`, distinct from `TIMEOUT` and `PANE_NOT_FOUND`.
+35. When a pane is destroyed, its retained stream is dropped immediately; later commands for that `%pane_id` fail with `PANE_NOT_FOUND`, not `INVALID_AFTER`.
+
 ### Errors
 
-34. Command-level failures emit structured JSON on `stdout` with a nonzero exit code.
-35. Runtime or controller failures emit diagnostics on `stderr` with a nonzero exit code.
-36. The canonical error codes `MISSING_AFTER`, `INVALID_AFTER`, `PANE_NOT_FOUND`, and `TIMEOUT` are used where applicable.
+36. Command-level failures emit structured JSON on `stdout` with a nonzero exit code.
+37. Runtime or controller failures emit diagnostics on `stderr` with a nonzero exit code.
+38. The canonical error codes `MISSING_AFTER`, `INVALID_AFTER`, `PANE_NOT_FOUND`, `PANE_CLOSED`, and `TIMEOUT` are used where applicable.
 
 ### Architecture
 
-37. The implementation follows the architectural patterns in §10.
+39. The implementation follows the architectural patterns in §10.
 
 ---
 
