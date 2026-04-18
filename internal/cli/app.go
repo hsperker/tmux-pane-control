@@ -43,33 +43,120 @@ type App struct {
 
 // Run dispatches args[1:]-style arguments (i.e. without argv[0]).
 // Return is the process exit code.
+//
+// Global flags (--tmux-socket, --tmux-socket-name, --help) may appear
+// before OR after the subcommand per spec §6.2. extractGlobals hoists
+// any that appear BEFORE the subcommand out of args, then reinjects
+// them at the front of the subcommand's own argv so its FlagSet can
+// parse them normally. Flags that appear AFTER the subcommand are
+// left in place and handled the same way.
 func (a *App) Run(args []string) int {
-	if len(args) == 0 {
+	globals, helpSeen, remaining := extractGlobals(args)
+
+	if helpSeen {
+		fmt.Fprint(a.Stdout, Usage)
+		return 0
+	}
+	if len(remaining) == 0 {
 		fmt.Fprint(a.Stderr, Usage)
 		return 2
 	}
-	switch args[0] {
-	case "--help", "-h", "help":
+
+	// Explicit "help" / "-h" subcommand (not handled by extractGlobals
+	// because it doesn't start with "--").
+	switch remaining[0] {
+	case "-h", "help":
 		fmt.Fprint(a.Stdout, Usage)
 		return 0
+	}
+
+	// Reinject globals at the front of the subcommand's argv so the
+	// subcommand's FlagSet picks them up.
+	subArgs := make([]string, 0, len(globals)+len(remaining)-1)
+	subArgs = append(subArgs, globals...)
+	subArgs = append(subArgs, remaining[1:]...)
+
+	switch remaining[0] {
 	case "list":
-		return a.runList(args[1:])
+		return a.runList(subArgs)
 	case "snapshot":
-		return a.runSnapshot(args[1:])
+		return a.runSnapshot(subArgs)
 	case "read":
-		return a.runRead(args[1:])
+		return a.runRead(subArgs)
 	case "text":
-		return a.runText(args[1:])
+		return a.runText(subArgs)
 	case "key":
-		return a.runKey(args[1:])
+		return a.runKey(subArgs)
 	case "wait":
-		return a.runWait(args[1:])
+		return a.runWait(subArgs)
 	case "daemon":
-		return a.runDaemon(args[1:])
+		return a.runDaemon(subArgs)
 	default:
-		fmt.Fprintf(a.Stderr, "tpctl: unknown command %q\n\n%s", args[0], Usage)
+		fmt.Fprintf(a.Stderr, "tpctl: unknown command %q\n\n%s", remaining[0], Usage)
 		return 2
 	}
+}
+
+// extractGlobals walks args from the start and pulls out any global
+// flags (--tmux-socket VALUE, --tmux-socket=VALUE, --tmux-socket-name
+// VALUE, --tmux-socket-name=VALUE, --help, -h) that appear before the
+// subcommand. The first argument that is not a recognized global flag
+// ends extraction and is treated as the subcommand; the "--" sentinel
+// also ends extraction (and is preserved in remaining).
+//
+// Returns:
+//   - globals:   the global-flag tokens in order, ready to reinject
+//   - helpSeen:  true if --help or -h appeared before the subcommand
+//   - remaining: args starting at the subcommand (empty when no subcommand)
+func extractGlobals(args []string) (globals []string, helpSeen bool, remaining []string) {
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		if a == "--" {
+			break
+		}
+		name := ""
+		hasEq := false
+		switch {
+		case strings.HasPrefix(a, "--") && len(a) > 2:
+			name = a[2:]
+			if eq := strings.IndexByte(name, '='); eq >= 0 {
+				name = name[:eq]
+				hasEq = true
+			}
+		case a == "-h":
+			name = "h"
+		default:
+			// Not a flag form we recognize; treat as the subcommand.
+			return globals, helpSeen, args[i:]
+		}
+
+		switch name {
+		case "help", "h":
+			helpSeen = true
+			i++
+		case "tmux-socket", "tmux-socket-name":
+			globals = append(globals, a)
+			if hasEq {
+				i++
+				continue
+			}
+			if i+1 >= len(args) {
+				// Missing value — hand the lonely flag to the
+				// subcommand's FlagSet so it can produce the
+				// "flag needs an argument" diagnostic.
+				i++
+				continue
+			}
+			globals = append(globals, args[i+1])
+			i += 2
+		default:
+			// Unknown long flag before the subcommand — not a global;
+			// hand off to the subcommand handler, which will reject it.
+			return globals, helpSeen, args[i:]
+		}
+	}
+	return globals, helpSeen, args[i:]
 }
 
 // globalFlags defines flags accepted by every subcommand. Subcommands

@@ -186,3 +186,130 @@ func TestPaneFlagMustStartWithPercent(t *testing.T) {
 		t.Fatalf("message = %q", e.Message)
 	}
 }
+
+// TestGlobalFlagsBeforeSubcommand pins spec §6.2: global flags
+// (--tmux-socket, --tmux-socket-name, --help) must work both
+// BEFORE and AFTER the subcommand. Extraction must not mis-read
+// an unknown-to-globals flag as a global.
+func TestGlobalFlagsBeforeSubcommand(t *testing.T) {
+	// --tmux-socket before subcommand: should NOT fall into the
+	// "unknown command" branch; instead extraction hoists it.
+	// We can't easily dial a real daemon here, but we CAN verify
+	// that --pane-less snapshot still surfaces an INVALID_ARGS
+	// from the snapshot handler (proving dispatch reached it).
+	code, stdout, _ := runApp([]string{
+		"--tmux-socket", "/tmp/nope.sock", "snapshot",
+	})
+	if code == 0 {
+		t.Fatal("want nonzero (missing --pane)")
+	}
+	var e domain.ErrorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &e); err != nil {
+		t.Fatalf("stdout not JSON, dispatch didn't reach snapshot: %q", stdout)
+	}
+	if e.Code != domain.ErrInvalidArgs {
+		t.Fatalf("code = %q", e.Code)
+	}
+}
+
+func TestGlobalFlagsEqualsFormBeforeSubcommand(t *testing.T) {
+	code, stdout, _ := runApp([]string{
+		"--tmux-socket=/tmp/nope.sock", "snapshot",
+	})
+	if code == 0 {
+		t.Fatal("want nonzero")
+	}
+	var e domain.ErrorResponse
+	if err := json.Unmarshal([]byte(strings.TrimSpace(stdout)), &e); err != nil {
+		t.Fatalf("stdout not JSON: %q", stdout)
+	}
+	if e.Code != domain.ErrInvalidArgs {
+		t.Fatalf("code = %q", e.Code)
+	}
+}
+
+func TestHelpBeforeSubcommand(t *testing.T) {
+	// --help before anything else: top-level usage, exit 0.
+	code, stdout, stderr := runApp([]string{"--help"})
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(stdout, "tpctl") {
+		t.Fatalf("stdout: %q", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr: %q", stderr)
+	}
+}
+
+func TestHelpAfterGlobalFlags(t *testing.T) {
+	// --tmux-socket X --help: global flags before --help still
+	// yield top-level help; no dial attempt.
+	code, stdout, _ := runApp([]string{
+		"--tmux-socket", "/tmp/nope.sock", "--help",
+	})
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(stdout, "tpctl") {
+		t.Fatalf("stdout: %q", stdout)
+	}
+}
+
+// TestExtractGlobals_PureLogic exercises the extractor directly so
+// we catch regressions in edge cases the end-to-end tests don't
+// cover (unknown long flags, -h shortcut, -- sentinel, etc.).
+func TestExtractGlobals_PureLogic(t *testing.T) {
+	cases := []struct {
+		name        string
+		args        []string
+		wantGlobals []string
+		wantHelp    bool
+		wantRest    []string
+	}{
+		{"no_globals", []string{"list"}, nil, false, []string{"list"}},
+		{"socket_space_form", []string{"--tmux-socket", "/s", "list"},
+			[]string{"--tmux-socket", "/s"}, false, []string{"list"}},
+		{"socket_equals_form", []string{"--tmux-socket=/s", "list"},
+			[]string{"--tmux-socket=/s"}, false, []string{"list"}},
+		{"socket_name_form", []string{"--tmux-socket-name", "mux", "list"},
+			[]string{"--tmux-socket-name", "mux"}, false, []string{"list"}},
+		{"help_long", []string{"--help"}, nil, true, []string{}},
+		{"help_short", []string{"-h"}, nil, true, []string{}},
+		{"help_then_subcmd", []string{"--help", "list"}, nil, true, []string{"list"}},
+		{"global_then_help", []string{"--tmux-socket", "/s", "--help"},
+			[]string{"--tmux-socket", "/s"}, true, []string{}},
+		{"double_dash_halts", []string{"--", "list"}, nil, false, []string{"--", "list"}},
+		{"unknown_flag_is_subcmd", []string{"--bogus", "list"},
+			nil, false, []string{"--bogus", "list"}},
+		{"subcmd_only", []string{"snapshot", "--pane", "%0"},
+			nil, false, []string{"snapshot", "--pane", "%0"}},
+		{"empty", nil, nil, false, []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g, h, r := extractGlobals(tc.args)
+			if !stringSliceEqual(g, tc.wantGlobals) {
+				t.Errorf("globals = %v, want %v", g, tc.wantGlobals)
+			}
+			if h != tc.wantHelp {
+				t.Errorf("helpSeen = %v, want %v", h, tc.wantHelp)
+			}
+			if !stringSliceEqual(r, tc.wantRest) {
+				t.Errorf("remaining = %v, want %v", r, tc.wantRest)
+			}
+		})
+	}
+}
+
+func stringSliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
