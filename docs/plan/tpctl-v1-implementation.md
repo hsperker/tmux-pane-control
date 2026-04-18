@@ -28,47 +28,85 @@ the last one left off.
 - **E2E** — real tmux on a disposable socket, invoked by the test. Gated to
   environments with tmux available.
 
+## Conventions
+
+- **Go module path:** `github.com/hsperker/tmux-pane-control`.
+- **Commit style:** imperative subject, optional prefix
+  (`test:`, `feat:`, `refactor:`, `plan:`, `docs:`, `spec:`).
+- **Branches:** one short-lived branch per slice, named
+  `slice-NN-<short-name>` (e.g. `slice-01-scaffold`), cut from the trunk
+  branch the session is working on, PR back, squash-merge. Automation
+  harnesses may prefix branch names; the `slice-NN-<short-name>` suffix is
+  what matters.
+- **Never push directly to `main`.**
+- **Keep this plan in sync.** Every slice PR also ticks its checkbox below
+  and updates the "Current status" section. The plan is the source of truth
+  for progress; `git log` is secondary.
+
 ## Slice sequence
 
-Each row is one branch / PR. Validation is what a human can run by hand after
-the slice lands, in addition to the green test suite.
+Tick a checkbox when the slice has landed on trunk. Validation column is
+what a human can run by hand after the slice lands, in addition to the
+green test suite.
 
-| # | Slice | Tests first | Manual validation |
-|---|---|---|---|
-| 1 | Go module scaffold + `tpctl` binary with `--help` | binary smoke test | `./tpctl --help` |
-| 2 | `domain` package: response types, error codes, JSON shapes | table-driven marshal/unmarshal tests vs spec §9 examples | `go test ./...` |
-| 3 | `tmuxctl` port (interface) + fake + `list` handler | handler test using fake | `go test` |
-| 4 | Real tmux adapter for `list-panes` + CLI wiring for `list` | e2e against real tmux | `./tpctl list` inside a live tmux |
-| 5 | `snapshot` (visible screen only; no history, no token yet) | handler + adapter tests | `./tpctl snapshot --pane %N` |
-| 6 | Text normalization (§8.3) as a pure package | golden tests | unit only |
-| 7 | Ring-buffer `store` + opaque checkpoint tokens + `read --after` | store + handler tests with fake stream | `snapshot` then `read` shows delta |
-| 8 | Controller event loop owning the store + tmux output subscription | controller tests with fake `tmuxctl` | live pane output flows through `read` |
-| 9 | `text` + `key` with send-ack | fake-ack tests + integration | `snapshot → text → read` sees echoed output |
-| 10 | `waiter` package: sentinel matcher (pure) | table-driven matcher tests | unit only |
-| 11 | `wait` command + timeout plumbing | handler tests | `wait --for sentinel` end-to-end |
-| 12 | Quiescence mode | matcher + timer tests | `wait --for quiescence` |
-| 13 | Regex mode (RE2) | matcher tests | `wait --for regex` |
-| 14 | Controller/CLI split: daemon + Unix socket + auto-spawn + `tpctl daemon` | IPC + startup-race tests | same CLI, now cross-process |
-| 15 | Pane lifecycle: `PANE_CLOSED`, `PANE_NOT_FOUND`, retained-stream drop | controller tests | pane close surfaces correct codes |
-| 16 | Scrollback history; tmux socket identity (`-S` / `-L` / `$TMUX`); multi-server | adapter tests | `snapshot --history-lines N`; multi-socket |
-| 17 | Map §17 acceptance criteria → acceptance test suite; close residual gaps | acceptance suite | all 39 criteria green |
-
-## Branch strategy
-
-- Development branch tracked by the harness: `claude/review-tpctl-specs-OSjfY`.
-- Each slice: a short-lived branch `claude/slice-NN-<short-name>` cut from the
-  development branch, PR back into it, squash-merge.
-- Never push directly to `main`.
+- [ ] **Slice 1 — scaffold.** Go module + `tpctl` binary with `--help`.
+  Tests first: binary smoke test. Validation: `./tpctl --help`.
+- [ ] **Slice 2 — domain types.** `domain` package: response types, error
+  codes, JSON shapes. Tests first: table-driven marshal/unmarshal tests
+  against spec §9 examples. Validation: `go test ./...`.
+- [ ] **Slice 3 — `list` handler.** `tmuxctl` port (interface) + fake +
+  `list` handler. Tests first: handler test using the fake.
+  Validation: `go test ./...`.
+- [ ] **Slice 4 — real `list`.** Real tmux adapter for `list-panes` + CLI
+  wiring for `list`. Tests first: e2e against real tmux.
+  Validation: `./tpctl list` inside a live tmux.
+- [ ] **Slice 5 — `snapshot`.** Visible screen only; no history, no token
+  yet. Tests first: handler + adapter tests.
+  Validation: `./tpctl snapshot --pane %N`.
+- [ ] **Slice 6 — text normalization.** §8.3 as a pure package.
+  Tests first: golden tests. Validation: unit only.
+- [ ] **Slice 7 — `read --after`.** Ring-buffer `store` + opaque checkpoint
+  tokens + `read` command. Tests first: store + handler tests with a fake
+  stream. Validation: `snapshot` then `read` shows the delta.
+- [ ] **Slice 8 — controller loop.** Event loop owns the store + subscribes
+  to tmux output. Tests first: controller tests with fake `tmuxctl`.
+  Validation: live pane output flows through `read`.
+- [ ] **Slice 9 — `text` + `key`.** Send-ack semantics (§9.4, §9.5).
+  Tests first: fake-ack tests + integration.
+  Validation: `snapshot → text → read` sees echoed output.
+- [ ] **Slice 10 — sentinel matcher.** `waiter` package: pure sentinel
+  matcher. Tests first: table-driven matcher tests. Validation: unit only.
+- [ ] **Slice 11 — `wait` command.** Timeout plumbing + sentinel mode
+  wired end-to-end. Tests first: handler tests.
+  Validation: `wait --for sentinel` end-to-end.
+- [ ] **Slice 12 — quiescence mode.** Tests first: matcher + timer tests.
+  Validation: `wait --for quiescence`.
+- [ ] **Slice 13 — regex mode.** RE2. Tests first: matcher tests.
+  Validation: `wait --for regex`.
+- [ ] **Slice 14 — daemon split.** Controller/CLI split: daemon + Unix
+  socket + auto-spawn + `tpctl daemon`. Tests first: IPC + startup-race
+  tests. Validation: same CLI, now cross-process.
+- [ ] **Slice 15 — pane lifecycle.** `PANE_CLOSED`, `PANE_NOT_FOUND`,
+  retained-stream drop on destruction. Tests first: controller tests.
+  Validation: pane close surfaces correct codes.
+- [ ] **Slice 16 — history + multi-server.** Scrollback history; tmux
+  socket identity (`-S` / `-L` / `$TMUX`); multi-server.
+  Tests first: adapter tests.
+  Validation: `snapshot --history-lines N`; multi-socket.
+- [ ] **Slice 17 — acceptance suite.** Map spec §17 acceptance criteria to
+  an acceptance test suite; close residual gaps.
+  Tests first: acceptance suite. Validation: all 39 criteria green.
 
 ## Current status
 
 - Spec frozen at `docs/specs/tpctl-v1.md`.
-- No implementation code exists yet.
-- **Next action:** start slice 1 (Go module scaffold + `tpctl --help`).
+- Plan captured (this file). No implementation code exists yet.
+- **Next action:** start slice 1.
 
 ## How a fresh session should pick up
 
 1. Read `docs/specs/tpctl-v1.md` for the normative contract.
-2. Read this file for the plan and current status.
-3. Run `git log --oneline` to see which slices have landed.
-4. Resume at the first slice that is not yet merged.
+2. Read this file. The first unchecked slice above is the one to start.
+3. Cross-check with `git log --oneline` and the remote branches / PRs in
+   case the checkboxes have drifted; if they have, fix the plan first.
+4. Cut a `slice-NN-<short-name>` branch and proceed.
