@@ -100,3 +100,10 @@ func (c *Controller) SendText(id domain.PaneID, text string, enter bool) error {
 func (c *Controller) SendKeys(id domain.PaneID, keys []string) error {
 	return SendKeys(c.port, id, keys)
 }
+
+// Wait implements `tpctl wait` (spec §9.6). It runs for up to
+// req.Timeout, ending as soon as the match condition is met or the
+// provided context is cancelled.
+func (c *Controller) Wait(ctx context.Context, req WaitRequest) (*domain.WaitResponse, error) {
+	return Wait(ctx, c.store, req)
+}
