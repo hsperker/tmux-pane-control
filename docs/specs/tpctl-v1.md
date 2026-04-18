@@ -479,6 +479,27 @@ No implicit anchoring is applied. The pattern is evaluated against the full post
 tpctl wait --pane %42 --after TOKEN --for quiescence --ms 250 --timeout-ms 5000
 ```
 
+Quiescence means the pane has stopped producing output. Any byte appended to the retained output stream after the supplied checkpoint counts as activity and resets the quiet timer. Control sequences count as activity — quiescence tracks stream-level activity, not rendered semantic change, so a busy TUI emitting only control output is not treated as quiet.
+
+Let:
+
+- `T_checkpoint` = time the checkpoint token was created
+- `T_last` = timestamp of the most recent output byte appended after that checkpoint, if any
+
+Quiescence is satisfied at time `now` iff:
+
+```text
+now - max(T_checkpoint, T_last_if_present) >= ms
+```
+
+In words:
+
+- if no output has appeared after the checkpoint, the quiet window is measured from the checkpoint time
+- if output has appeared after the checkpoint, the quiet window is measured from the most recent output byte
+- if the pane is already quiet for at least `--ms` when the wait is registered, the wait succeeds immediately
+
+On success, quiescence returns only `result: "quiescence"` and `next`. It does not return `matched`. The returned `next` corresponds to the stream position at the moment quiescence is declared satisfied, so a follow-up `read --after <next>` is guaranteed to see only strictly later output.
+
 ### Semantics
 
 - `wait` matches against **all retained output after the checkpoint token**, including output that was already buffered by the controller at the moment `wait` was registered, as well as output that arrives later
