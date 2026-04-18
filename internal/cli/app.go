@@ -12,6 +12,7 @@ import (
 
 	"github.com/hsperker/tmux-pane-control/internal/controller"
 	"github.com/hsperker/tmux-pane-control/internal/domain"
+	"github.com/hsperker/tmux-pane-control/internal/store"
 	"github.com/hsperker/tmux-pane-control/internal/tmuxctl"
 )
 
@@ -57,6 +58,8 @@ func (a *App) Run(args []string) int {
 		return a.runList(args[1:])
 	case "snapshot":
 		return a.runSnapshot(args[1:])
+	case "read":
+		return a.runRead(args[1:])
 	default:
 		fmt.Fprintf(a.Stderr, "tpctl: unknown command %q\n\n%s", args[0], Usage)
 		return 2
@@ -164,13 +167,65 @@ func (a *App) runSnapshot(args []string) int {
 		return a.emitCmdError(cerr)
 	}
 
-	resp, err := controller.Snapshot(port, &controller.CounterIssuer{}, domain.PaneID(*pane))
+	// Each CLI invocation runs with a fresh, in-process store until
+	// slice 14 splits the controller into a long-lived daemon. That
+	// means snapshot tokens are only valid within this process and
+	// to any caller that still has this store — not across CLI calls.
+	st := store.New(store.DefaultCapacity)
+	resp, err := controller.Snapshot(port, st, domain.PaneID(*pane))
 	if err != nil {
 		var ce *domain.ErrorResponse
 		if errors.As(err, &ce) {
 			return a.emitCmdError(ce)
 		}
 		fmt.Fprintf(a.Stderr, "tpctl snapshot: %v\n", err)
+		return 1
+	}
+	return a.emitJSON(resp)
+}
+
+func (a *App) runRead(args []string) int {
+	fs := flag.NewFlagSet("read", flag.ContinueOnError)
+	fs.SetOutput(a.Stderr)
+	var g globalFlags
+	g.register(fs)
+	pane := registerPaneFlag(fs)
+	after := fs.String("after", "", "checkpoint token from a prior snapshot or read")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return a.emitCmdError(&domain.ErrorResponse{
+			Code:    domain.ErrInvalidArgs,
+			Message: "read takes no positional arguments",
+		})
+	}
+	if e := validatePaneID(*pane); e != nil {
+		return a.emitCmdError(e)
+	}
+	if *after == "" {
+		// Spec §9.3: missing --after is MISSING_AFTER.
+		return a.emitCmdError(&domain.ErrorResponse{
+			PaneID:  *pane,
+			Code:    domain.ErrMissingAfter,
+			Message: "read requires --after; use snapshot to bootstrap",
+		})
+	}
+	// Silence unused-port warning: port is not consulted in slice 7
+	// because the store is per-invocation and therefore has no
+	// output appended yet. Slice 8 wires the controller loop so the
+	// store is populated from live tmux output.
+	if _, cerr := g.portOrError(); cerr != nil {
+		return a.emitCmdError(cerr)
+	}
+	st := store.New(store.DefaultCapacity)
+	resp, err := controller.Read(st, domain.PaneID(*pane), domain.Token(*after))
+	if err != nil {
+		var ce *domain.ErrorResponse
+		if errors.As(err, &ce) {
+			return a.emitCmdError(ce)
+		}
+		fmt.Fprintf(a.Stderr, "tpctl read: %v\n", err)
 		return 1
 	}
 	return a.emitJSON(resp)
