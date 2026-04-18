@@ -257,6 +257,10 @@ One controller per tmux server, keyed on the resolved tmux socket
 path. The controller is a single-writer event loop that owns all
 mutable pane state; handlers are thin and pure-ish.
 
+See [`docs/architecture.md`](docs/architecture.md) for Mermaid
+diagrams of the component layout, request lifecycle, the race-free
+`snapshot → text → wait` timing, and the wait state machine.
+
 ## Building and testing
 
 ```bash
@@ -273,6 +277,9 @@ socket and drives the built binary through the daemon.
 
 - [`docs/specs/tpctl-v1.md`](docs/specs/tpctl-v1.md) — normative
   v1 specification. This is what implementations must conform to.
+- [`docs/architecture.md`](docs/architecture.md) — component
+  overview, request lifecycle, and race-free wait timing as
+  Mermaid diagrams.
 - [`docs/plan/tpctl-v1-implementation.md`](docs/plan/tpctl-v1-implementation.md)
   — the slice-by-slice plan that was used to build v1, plus a
   retrospective and the list of known deviations the code is still
