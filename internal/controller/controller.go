@@ -90,3 +90,13 @@ func (c *Controller) Snapshot(id domain.PaneID) (*domain.SnapshotResponse, error
 func (c *Controller) Read(id domain.PaneID, after domain.Token) (*domain.ReadResponse, error) {
 	return Read(c.store, id, after)
 }
+
+// SendText implements `tpctl text` (spec §9.4).
+func (c *Controller) SendText(id domain.PaneID, text string, enter bool) error {
+	return SendText(c.port, id, text, enter)
+}
+
+// SendKeys implements `tpctl key` (spec §9.5).
+func (c *Controller) SendKeys(id domain.PaneID, keys []string) error {
+	return SendKeys(c.port, id, keys)
+}

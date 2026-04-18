@@ -66,6 +66,68 @@ func (a *Adapter) ListPanes() ([]domain.PaneID, error) {
 	return panes, nil
 }
 
+// isPaneMissingStderr recognizes tmux's stderr signals for a missing
+// pane. Exact strings vary by tmux version; we match substrings.
+func isPaneMissingStderr(s string) bool {
+	return strings.Contains(s, "can't find pane") ||
+		strings.Contains(s, "no such pane") ||
+		strings.Contains(s, "pane not found")
+}
+
+// SendText sends literal text via `tmux send-keys -l`. When enter is
+// true a second send-keys invocation appends the Enter key — exactly
+// as the spec §9.4 requires (not a literal \n).
+func (a *Adapter) SendText(id domain.PaneID, text string, enter bool) error {
+	var stderr bytes.Buffer
+	c := a.cmd("send-keys", "-l", "-t", string(id), "--", text)
+	c.Stderr = &stderr
+	if err := c.Run(); err != nil {
+		if isPaneMissingStderr(stderr.String()) {
+			return ErrPaneNotFound
+		}
+		return fmt.Errorf("tmux send-keys -l: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	if enter {
+		stderr.Reset()
+		c2 := a.cmd("send-keys", "-t", string(id), "--", "Enter")
+		c2.Stderr = &stderr
+		if err := c2.Run(); err != nil {
+			if isPaneMissingStderr(stderr.String()) {
+				return ErrPaneNotFound
+			}
+			return fmt.Errorf("tmux send-keys Enter: %w: %s", err, strings.TrimSpace(stderr.String()))
+		}
+	}
+	return nil
+}
+
+// SendKeys sends the listed key tokens via `tmux send-keys`. Tokens
+// are treated as data; the `--` guard stops tmux from parsing them as
+// flags. Invalid tokens fail with ErrInvalidKey.
+func (a *Adapter) SendKeys(id domain.PaneID, keys []string) error {
+	if len(keys) == 0 {
+		return fmt.Errorf("send-keys: no keys")
+	}
+	args := []string{"send-keys", "-t", string(id), "--"}
+	args = append(args, keys...)
+	var stderr bytes.Buffer
+	c := a.cmd(args...)
+	c.Stderr = &stderr
+	if err := c.Run(); err != nil {
+		msg := stderr.String()
+		if isPaneMissingStderr(msg) {
+			return ErrPaneNotFound
+		}
+		if strings.Contains(msg, "unknown key") ||
+			strings.Contains(msg, "invalid key") ||
+			strings.Contains(msg, "bad key") {
+			return fmt.Errorf("%w: %s", ErrInvalidKey, strings.TrimSpace(msg))
+		}
+		return fmt.Errorf("tmux send-keys: %w: %s", err, strings.TrimSpace(msg))
+	}
+	return nil
+}
+
 // CapturePane runs `tmux capture-pane -p -t <id>` which prints the
 // current visible screen to stdout as plain text (no ANSI). Scrollback
 // is not included in v1 slice 5; §9.2 scrollback_text is handled in a

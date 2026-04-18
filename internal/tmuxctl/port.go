@@ -41,4 +41,17 @@ type Port interface {
 	// channel is closed when ctx is cancelled or the subscription
 	// fails.
 	Subscribe(ctx context.Context) (<-chan PaneOutput, error)
+
+	// SendText sends literal text to the pane. If enter is true, an
+	// Enter key press is appended after the text — not a literal \n
+	// (spec §9.4). Returns only after tmux has acknowledged the send.
+	SendText(id domain.PaneID, text string, enter bool) error
+
+	// SendKeys sends named key tokens to the pane. Each key follows
+	// tmux's send-keys vocabulary. Returns only after tmux has
+	// acknowledged the send (spec §9.5).
+	SendKeys(id domain.PaneID, keys []string) error
 }
+
+// ErrInvalidKey is returned by SendKeys when tmux rejects a key token.
+var ErrInvalidKey = errors.New("invalid key token")
