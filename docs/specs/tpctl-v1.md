@@ -65,6 +65,25 @@ It avoids races.
 
 Without explicit checkpoints, output that appears between `text`/`key` and `wait` can be missed.
 
+### 4.3 Checkpoint token semantics
+
+Checkpoint tokens are:
+
+- **opaque** — agents must not parse, compare, or construct them
+- **pane-scoped** — a token issued for `%42` is not valid for any other pane
+- **controller-lifetime scoped** — a token is invalidated when the controller process restarts
+- **bounded by retained stream state** — a token may become invalid if the controller has discarded the referenced portion of the output stream
+
+A token remains valid until one of the following occurs:
+
+- the pane is destroyed
+- the controller process restarts
+- the controller drops the referenced portion of the buffered output stream
+
+A token is an in-memory cursor, not a durable bookmark. v1 makes no guarantee of persistence, cross-process portability, or cross-pane validity.
+
+If a command receives a token that is not valid for the target pane or is no longer retained, it must fail with the `INVALID_AFTER` error code (see §9.3, §9.6).
+
 ---
 
 ## 5. Pane identity
@@ -293,13 +312,23 @@ Returns output after an explicit checkpoint token.
 }
 ```
 
-### Failure example
+### Failure example: missing token
 
 ```json
 {
   "pane_id": "%42",
   "code": "MISSING_AFTER",
   "message": "read requires --after; use snapshot to bootstrap"
+}
+```
+
+### Failure example: invalid or expired token
+
+```json
+{
+  "pane_id": "%42",
+  "code": "INVALID_AFTER",
+  "message": "checkpoint token is not valid for this pane or is no longer retained"
 }
 ```
 
