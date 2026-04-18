@@ -54,59 +54,65 @@ Tick a checkbox when the slice has landed on trunk. Validation column is
 what a human can run by hand after the slice lands, in addition to the
 green test suite.
 
-- [ ] **Slice 1 — scaffold.** Go module + `tpctl` binary with `--help`.
+- [x] **Slice 1 — scaffold.** Go module + `tpctl` binary with `--help`.
   Tests first: binary smoke test. Validation: `./tpctl --help`.
-- [ ] **Slice 2 — domain types.** `domain` package: response types, error
+- [x] **Slice 2 — domain types.** `domain` package: response types, error
   codes, JSON shapes. Tests first: table-driven marshal/unmarshal tests
   against spec §9 examples. Validation: `go test ./...`.
-- [ ] **Slice 3 — `list` handler.** `tmuxctl` port (interface) + fake +
+- [x] **Slice 3 — `list` handler.** `tmuxctl` port (interface) + fake +
   `list` handler. Tests first: handler test using the fake.
   Validation: `go test ./...`.
-- [ ] **Slice 4 — real `list`.** Real tmux adapter for `list-panes` + CLI
+- [x] **Slice 4 — real `list`.** Real tmux adapter for `list-panes` + CLI
   wiring for `list`. Tests first: e2e against real tmux.
   Validation: `./tpctl list` inside a live tmux.
-- [ ] **Slice 5 — `snapshot`.** Visible screen only; no history, no token
+- [x] **Slice 5 — `snapshot`.** Visible screen only; no history, no token
   yet. Tests first: handler + adapter tests.
   Validation: `./tpctl snapshot --pane %N`.
-- [ ] **Slice 6 — text normalization.** §8.3 as a pure package.
+- [x] **Slice 6 — text normalization.** §8.3 as a pure package.
   Tests first: golden tests. Validation: unit only.
-- [ ] **Slice 7 — `read --after`.** Ring-buffer `store` + opaque checkpoint
+- [x] **Slice 7 — `read --after`.** Ring-buffer `store` + opaque checkpoint
   tokens + `read` command. Tests first: store + handler tests with a fake
   stream. Validation: `snapshot` then `read` shows the delta.
-- [ ] **Slice 8 — controller loop.** Event loop owns the store + subscribes
+- [x] **Slice 8 — controller loop.** Event loop owns the store + subscribes
   to tmux output. Tests first: controller tests with fake `tmuxctl`.
   Validation: live pane output flows through `read`.
-- [ ] **Slice 9 — `text` + `key`.** Send-ack semantics (§9.4, §9.5).
+- [x] **Slice 9 — `text` + `key`.** Send-ack semantics (§9.4, §9.5).
   Tests first: fake-ack tests + integration.
   Validation: `snapshot → text → read` sees echoed output.
-- [ ] **Slice 10 — sentinel matcher.** `waiter` package: pure sentinel
+- [x] **Slice 10 — sentinel matcher.** `waiter` package: pure sentinel
   matcher. Tests first: table-driven matcher tests. Validation: unit only.
-- [ ] **Slice 11 — `wait` command.** Timeout plumbing + sentinel mode
+- [x] **Slice 11 — `wait` command.** Timeout plumbing + sentinel mode
   wired end-to-end. Tests first: handler tests.
   Validation: `wait --for sentinel` end-to-end.
-- [ ] **Slice 12 — quiescence mode.** Tests first: matcher + timer tests.
+- [x] **Slice 12 — quiescence mode.** Tests first: matcher + timer tests.
   Validation: `wait --for quiescence`.
-- [ ] **Slice 13 — regex mode.** RE2. Tests first: matcher tests.
+- [x] **Slice 13 — regex mode.** RE2. Tests first: matcher tests.
   Validation: `wait --for regex`.
-- [ ] **Slice 14 — daemon split.** Controller/CLI split: daemon + Unix
+- [x] **Slice 14 — daemon split.** Controller/CLI split: daemon + Unix
   socket + auto-spawn + `tpctl daemon`. Tests first: IPC + startup-race
   tests. Validation: same CLI, now cross-process.
-- [ ] **Slice 15 — pane lifecycle.** `PANE_CLOSED`, `PANE_NOT_FOUND`,
+- [x] **Slice 15 — pane lifecycle.** `PANE_CLOSED`, `PANE_NOT_FOUND`,
   retained-stream drop on destruction. Tests first: controller tests.
   Validation: pane close surfaces correct codes.
-- [ ] **Slice 16 — history + multi-server.** Scrollback history; tmux
+- [x] **Slice 16 — history + multi-server.** Scrollback history; tmux
   socket identity (`-S` / `-L` / `$TMUX`); multi-server.
   Tests first: adapter tests.
   Validation: `snapshot --history-lines N`; multi-socket.
-- [ ] **Slice 17 — acceptance suite.** Map spec §17 acceptance criteria to
+- [x] **Slice 17 — acceptance suite.** Map spec §17 acceptance criteria to
   an acceptance test suite; close residual gaps.
   Tests first: acceptance suite. Validation: all 39 criteria green.
 
 ## Current status
 
 - Spec frozen at `docs/specs/tpctl-v1.md`.
-- Plan captured (this file). No implementation code exists yet.
-- **Next action:** start slice 1.
+- All 17 slices landed on `claude/review-tpctl-v1-docs-k35ZW`.
+- `go test ./...` is green across eight packages including an acceptance
+  suite at `cmd/tpctl/acceptance_test.go` that maps spec §17's
+  39 criteria onto subtests (one `CNN_...` subtest per criterion,
+  with a handful combined when they share a scenario).
+- **Next action:** none — v1 implementation is complete. Future work
+  belongs under spec §18 (e.g. `list --details`, prompt-aware helpers,
+  richer diagnostic commands).
 
 ## How a fresh session should pick up
 
