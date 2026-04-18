@@ -1,0 +1,4 @@
+/tpctl
+/dist/
+*.test
+coverage.out
