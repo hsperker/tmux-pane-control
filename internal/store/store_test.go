@@ -8,10 +8,25 @@ import (
 	"github.com/hsperker/tmux-pane-control/internal/domain"
 )
 
-func TestStore_TokenPaneScoped(t *testing.T) {
+func TestStore_TokenPaneScoped_TargetPaneMissing(t *testing.T) {
+	// Target pane %43 doesn't exist. Per spec §7.5 precedence, the
+	// pane lookup failure wins over INVALID_AFTER → ErrPaneUnknown.
 	s := New(16)
 	t1 := s.NewToken("%42")
-	_, _, err := s.Read("%43", t1) // wrong pane
+	_, _, err := s.Read("%43", t1)
+	if !errors.Is(err, ErrPaneUnknown) {
+		t.Fatalf("want ErrPaneUnknown, got %v", err)
+	}
+}
+
+func TestStore_TokenPaneScoped_BothPanesExist(t *testing.T) {
+	// Both %42 and %43 exist in the store; token is for the wrong
+	// pane. Pane lookup succeeds, so the precedence rule does not
+	// trigger and we get INVALID_AFTER via ErrTokenWrongPane.
+	s := New(16)
+	t1 := s.NewToken("%42")
+	s.Ensure("%43")
+	_, _, err := s.Read("%43", t1)
 	if !errors.Is(err, ErrTokenWrongPane) {
 		t.Fatalf("want ErrTokenWrongPane, got %v", err)
 	}

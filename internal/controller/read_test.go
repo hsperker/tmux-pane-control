@@ -64,9 +64,12 @@ func TestRead_InvalidAfterOnEviction(t *testing.T) {
 	}
 }
 
-func TestRead_InvalidAfterOnWrongPane(t *testing.T) {
+func TestRead_InvalidAfterWhenBothPanesExist(t *testing.T) {
+	// Spec §7.5 precedence: pane lookup succeeds → token mismatch
+	// surfaces as INVALID_AFTER (not masked by PANE_NOT_FOUND).
 	s := store.New(64)
 	tok := s.NewToken("%42")
+	s.Ensure("%43")
 	_, err := Read(s, "%43", tok)
 	var cerr *domain.ErrorResponse
 	if !errors.As(err, &cerr) {
@@ -74,6 +77,21 @@ func TestRead_InvalidAfterOnWrongPane(t *testing.T) {
 	}
 	if cerr.Code != domain.ErrInvalidAfter {
 		t.Fatalf("code = %q", cerr.Code)
+	}
+}
+
+func TestRead_PaneNotFoundWinsOverInvalidAfter(t *testing.T) {
+	// Spec §7.5 precedence item 3: if the target pane does not
+	// exist AND the token is also wrong, prefer PANE_NOT_FOUND.
+	s := store.New(64)
+	tok := s.NewToken("%42")
+	_, err := Read(s, "%43", tok) // %43 never ensured
+	var cerr *domain.ErrorResponse
+	if !errors.As(err, &cerr) {
+		t.Fatalf("want ErrorResponse, got %v", err)
+	}
+	if cerr.Code != domain.ErrPaneNotFound {
+		t.Fatalf("code = %q want PANE_NOT_FOUND", cerr.Code)
 	}
 }
 

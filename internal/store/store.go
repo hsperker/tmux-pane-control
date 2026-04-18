@@ -189,6 +189,15 @@ func (s *Store) LastAppend(id domain.PaneID) (time.Time, bool) {
 //     ErrTokenEvicted: translate to INVALID_AFTER (spec §7.5)
 //   - ErrPaneUnknown: translate to PANE_NOT_FOUND
 func (s *Store) Read(id domain.PaneID, after domain.Token) ([]byte, domain.Token, error) {
+	// Spec §7.5 precedence: "a token is invalid AND the pane lookup
+	// already fails → prefer PANE_NOT_FOUND over INVALID_AFTER".
+	// So check pane existence before validating the token's pane.
+	s.mu.Lock()
+	b, paneKnown := s.bufs[id]
+	s.mu.Unlock()
+	if !paneKnown {
+		return nil, "", ErrPaneUnknown
+	}
 	tp, err := decodeToken(after)
 	if err != nil {
 		return nil, "", err
@@ -201,6 +210,8 @@ func (s *Store) Read(id domain.PaneID, after domain.Token) ([]byte, domain.Token
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Re-check after reacquiring in case the pane was forgotten
+	// between the two critical sections.
 	b, ok := s.bufs[id]
 	if !ok {
 		return nil, "", ErrPaneUnknown

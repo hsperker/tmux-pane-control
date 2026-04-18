@@ -233,11 +233,14 @@ func TestAcceptance(t *testing.T) {
 		if code == 0 {
 			t.Fatalf("want nonzero exit")
 		}
-		// Spec §7.5 precedence: if pane doesn't exist AND token is
-		// invalid, prefer PANE_NOT_FOUND over INVALID_AFTER.
+		// Spec §7.5 precedence item 3: if pane doesn't exist AND
+		// token is invalid, PANE_NOT_FOUND wins over INVALID_AFTER.
 		ee := decodeErr(t, rOut)
-		if ee.Code != domain.ErrPaneNotFound && ee.Code != domain.ErrInvalidAfter {
-			t.Fatalf("code = %q", ee.Code)
+		if ee.Code != domain.ErrPaneNotFound {
+			t.Fatalf("code = %q want PANE_NOT_FOUND", ee.Code)
+		}
+		if ee.Message == "" {
+			t.Fatal("error message must not be empty (spec §7.2)")
 		}
 	})
 
@@ -442,8 +445,13 @@ func TestAcceptance(t *testing.T) {
 		if w.ExitCode == nil || *w.ExitCode != 11 {
 			t.Fatalf("exit_code = %v", w.ExitCode)
 		}
-		if w.Matched == nil || !strings.Contains(*w.Matched, "__DONE__:C21:") {
-			t.Fatalf("matched = %v", w.Matched)
+		// Spec §9.6: matched is the FULL "__DONE__:<token>:<exit>"
+		// literal, not just a substring.
+		if w.Matched == nil || *w.Matched != "__DONE__:C21:11" {
+			t.Fatalf("matched = %v, want %q", w.Matched, "__DONE__:C21:11")
+		}
+		if w.Result != domain.WaitSentinel {
+			t.Fatalf("result = %q", w.Result)
 		}
 	})
 
@@ -580,14 +588,16 @@ func TestAcceptance(t *testing.T) {
 	})
 
 	t.Run("C35_destroyed_pane_yields_PANE_NOT_FOUND", func(t *testing.T) {
-		// Attempt read for a pane that never existed.
+		// Spec §11.9: a command for a pane the controller doesn't
+		// know about fails with PANE_NOT_FOUND, NOT INVALID_AFTER,
+		// even when the token decodes to a different (valid) pane.
 		code, rOut, _ := e.run("read", "--pane", "%999", "--after", string(snapNext))
 		if code == 0 {
 			t.Fatal("want nonzero")
 		}
 		ee := decodeErr(t, rOut)
-		if ee.Code != domain.ErrPaneNotFound && ee.Code != domain.ErrInvalidAfter {
-			t.Fatalf("code = %q", ee.Code)
+		if ee.Code != domain.ErrPaneNotFound {
+			t.Fatalf("code = %q want PANE_NOT_FOUND", ee.Code)
 		}
 	})
 
