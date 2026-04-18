@@ -3,19 +3,15 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 	"time"
 
-	"github.com/hsperker/tmux-pane-control/internal/controller"
 	"github.com/hsperker/tmux-pane-control/internal/domain"
-	"github.com/hsperker/tmux-pane-control/internal/tmuxctl"
+	"github.com/hsperker/tmux-pane-control/internal/ipc"
 )
 
 // Usage is printed by --help and on missing/unknown commands.
@@ -68,6 +64,8 @@ func (a *App) Run(args []string) int {
 		return a.runKey(args[1:])
 	case "wait":
 		return a.runWait(args[1:])
+	case "daemon":
+		return a.runDaemon(args[1:])
 	default:
 		fmt.Fprintf(a.Stderr, "tpctl: unknown command %q\n\n%s", args[0], Usage)
 		return 2
@@ -84,36 +82,6 @@ type globalFlags struct {
 func (g *globalFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&g.socketPath, "tmux-socket", "", "tmux -S socket path")
 	fs.StringVar(&g.socketName, "tmux-socket-name", "", "tmux -L socket shortname")
-}
-
-// portOrError validates the global flags and returns either a tmuxctl
-// port or a command-level error. The caller decides how to surface it.
-func (g *globalFlags) portOrError() (tmuxctl.Port, *domain.ErrorResponse) {
-	if g.socketPath != "" && g.socketName != "" {
-		return nil, &domain.ErrorResponse{
-			Code:    domain.ErrInvalidArgs,
-			Message: "--tmux-socket and --tmux-socket-name are mutually exclusive",
-		}
-	}
-	return tmuxctl.NewAdapter(tmuxctl.Opts{
-		SocketPath: g.socketPath,
-		SocketName: g.socketName,
-	}), nil
-}
-
-// startController builds a Controller wrapping the resolved port,
-// starts its subscription, and returns it plus a teardown function.
-// On subscription failure, a runtime error is returned instead.
-func (g *globalFlags) startController(ctx context.Context) (*controller.Controller, func(), *domain.ErrorResponse, error) {
-	port, cerr := g.portOrError()
-	if cerr != nil {
-		return nil, func() {}, cerr, nil
-	}
-	c := controller.New(port)
-	if err := c.Start(ctx); err != nil {
-		return nil, func() {}, nil, err
-	}
-	return c, c.Stop, nil, nil
 }
 
 // requirePaneFlag registers --pane on fs and returns a pointer to the
@@ -192,6 +160,45 @@ func validatePaneID(p string) *domain.ErrorResponse {
 	return nil
 }
 
+// dial returns an IPC client for the tmux server identified by g,
+// auto-spawning a daemon if one isn't already running (spec §11.2).
+func (g *globalFlags) dial() (*ipc.Client, *domain.ErrorResponse, error) {
+	tmuxSocket, err := ipc.ResolveTmuxSocket(g.socketPath, g.socketName)
+	if err != nil {
+		return nil, &domain.ErrorResponse{
+			Code:    domain.ErrInvalidArgs,
+			Message: err.Error(),
+		}, nil
+	}
+	client, err := ipc.EnsureDaemon(tmuxSocket)
+	if err != nil {
+		return nil, nil, err
+	}
+	return client, nil, nil
+}
+
+// relay takes an ipc Response and emits it to the CLI's streams per
+// spec §7. Returns the process exit code.
+func (a *App) relay(resp *ipc.Response) int {
+	if resp == nil {
+		fmt.Fprintln(a.Stderr, "tpctl: empty response")
+		return 1
+	}
+	if resp.OK {
+		if len(resp.Body) > 0 {
+			fmt.Fprintln(a.Stdout, string(resp.Body))
+		}
+		return 0
+	}
+	if resp.Error != nil {
+		return a.emitCmdError(resp.Error)
+	}
+	if resp.Runtime != "" {
+		fmt.Fprintf(a.Stderr, "tpctl: %s\n", resp.Runtime)
+	}
+	return 1
+}
+
 func (a *App) runList(args []string) int {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -206,19 +213,20 @@ func (a *App) runList(args []string) int {
 			Message: "list takes no positional arguments",
 		})
 	}
-	port, cerr := g.portOrError()
+	client, cerr, rerr := g.dial()
 	if cerr != nil {
 		return a.emitCmdError(cerr)
 	}
-	// list does not need an active subscription; the Port alone
-	// suffices. Calling the handler directly avoids the cost of
-	// starting up tracker goroutines.
-	resp, err := controller.List(port)
+	if rerr != nil {
+		fmt.Fprintf(a.Stderr, "tpctl list: %v\n", rerr)
+		return 1
+	}
+	resp, err := client.Call(&ipc.Request{Op: ipc.OpList}, 10*time.Second)
 	if err != nil {
 		fmt.Fprintf(a.Stderr, "tpctl list: %v\n", err)
 		return 1
 	}
-	return a.emitJSON(resp)
+	return a.relay(resp)
 }
 
 func (a *App) runSnapshot(args []string) int {
@@ -227,7 +235,9 @@ func (a *App) runSnapshot(args []string) int {
 	var g globalFlags
 	g.register(fs)
 	pane := registerPaneFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	historyLines := fs.Int("history-lines", -1,
+		"include N lines of scrollback above the visible screen")
+	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 {
@@ -239,34 +249,66 @@ func (a *App) runSnapshot(args []string) int {
 	if e := validatePaneID(*pane); e != nil {
 		return a.emitCmdError(e)
 	}
-	port, cerr := g.portOrError()
+	client, cerr, rerr := g.dial()
 	if cerr != nil {
 		return a.emitCmdError(cerr)
-	}
-
-	// Snapshot in slice 8 still runs with a per-invocation
-	// controller; slice 14 makes the controller long-lived so tokens
-	// survive across CLI calls.
-	_ = port // unused outside of startController, kept for symmetry
-	ctrl, stop, cerr2, rerr := g.startController(context.Background())
-	if cerr2 != nil {
-		return a.emitCmdError(cerr2)
 	}
 	if rerr != nil {
 		fmt.Fprintf(a.Stderr, "tpctl snapshot: %v\n", rerr)
 		return 1
 	}
-	defer stop()
-	resp, err := ctrl.Snapshot(domain.PaneID(*pane))
+	req := &ipc.Request{Op: ipc.OpSnapshot, Pane: domain.PaneID(*pane)}
+	if *historyLines >= 0 {
+		req.HasHistory = true
+		req.HistoryLines = *historyLines
+	}
+	resp, err := client.Call(req, 15*time.Second)
 	if err != nil {
-		var ce *domain.ErrorResponse
-		if errors.As(err, &ce) {
-			return a.emitCmdError(ce)
-		}
 		fmt.Fprintf(a.Stderr, "tpctl snapshot: %v\n", err)
 		return 1
 	}
-	return a.emitJSON(resp)
+	return a.relay(resp)
+}
+
+func (a *App) runRead(args []string) int {
+	fs := flag.NewFlagSet("read", flag.ContinueOnError)
+	fs.SetOutput(a.Stderr)
+	var g globalFlags
+	g.register(fs)
+	pane := registerPaneFlag(fs)
+	after := fs.String("after", "", "checkpoint token from a prior snapshot or read")
+	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return a.emitCmdError(&domain.ErrorResponse{
+			Code:    domain.ErrInvalidArgs,
+			Message: "read takes no positional arguments",
+		})
+	}
+	if e := validatePaneID(*pane); e != nil {
+		return a.emitCmdError(e)
+	}
+	// Note: MISSING_AFTER enforcement lives in the server so the
+	// message is consistent whether called from local or remote.
+	client, cerr, rerr := g.dial()
+	if cerr != nil {
+		return a.emitCmdError(cerr)
+	}
+	if rerr != nil {
+		fmt.Fprintf(a.Stderr, "tpctl read: %v\n", rerr)
+		return 1
+	}
+	resp, err := client.Call(&ipc.Request{
+		Op:    ipc.OpRead,
+		Pane:  domain.PaneID(*pane),
+		After: domain.Token(*after),
+	}, 10*time.Second)
+	if err != nil {
+		fmt.Fprintf(a.Stderr, "tpctl read: %v\n", err)
+		return 1
+	}
+	return a.relay(resp)
 }
 
 func (a *App) runText(args []string) int {
@@ -283,7 +325,6 @@ func (a *App) runText(args []string) int {
 	if err := fs.Parse(reorderArgs(args, bools)); err != nil {
 		return 2
 	}
-	// Spec §9.4: exactly one positional text argument.
 	if fs.NArg() != 1 {
 		return a.emitCmdError(&domain.ErrorResponse{
 			Code:    domain.ErrInvalidArgs,
@@ -294,20 +335,25 @@ func (a *App) runText(args []string) int {
 	if e := validatePaneID(*pane); e != nil {
 		return a.emitCmdError(e)
 	}
-	port, cerr := g.portOrError()
+	client, cerr, rerr := g.dial()
 	if cerr != nil {
 		return a.emitCmdError(cerr)
 	}
-	if err := controller.SendText(port, domain.PaneID(*pane), payload, *enter); err != nil {
-		var ce *domain.ErrorResponse
-		if errors.As(err, &ce) {
-			return a.emitCmdError(ce)
-		}
+	if rerr != nil {
+		fmt.Fprintf(a.Stderr, "tpctl text: %v\n", rerr)
+		return 1
+	}
+	resp, err := client.Call(&ipc.Request{
+		Op:    ipc.OpText,
+		Pane:  domain.PaneID(*pane),
+		Text:  payload,
+		Enter: *enter,
+	}, 10*time.Second)
+	if err != nil {
 		fmt.Fprintf(a.Stderr, "tpctl text: %v\n", err)
 		return 1
 	}
-	// Spec §9.4: success emits no stdout.
-	return 0
+	return a.relay(resp)
 }
 
 func (a *App) runKey(args []string) int {
@@ -329,20 +375,24 @@ func (a *App) runKey(args []string) int {
 	if e := validatePaneID(*pane); e != nil {
 		return a.emitCmdError(e)
 	}
-	port, cerr := g.portOrError()
+	client, cerr, rerr := g.dial()
 	if cerr != nil {
 		return a.emitCmdError(cerr)
 	}
-	if err := controller.SendKeys(port, domain.PaneID(*pane), keys); err != nil {
-		var ce *domain.ErrorResponse
-		if errors.As(err, &ce) {
-			return a.emitCmdError(ce)
-		}
+	if rerr != nil {
+		fmt.Fprintf(a.Stderr, "tpctl key: %v\n", rerr)
+		return 1
+	}
+	resp, err := client.Call(&ipc.Request{
+		Op:   ipc.OpKey,
+		Pane: domain.PaneID(*pane),
+		Keys: keys,
+	}, 10*time.Second)
+	if err != nil {
 		fmt.Fprintf(a.Stderr, "tpctl key: %v\n", err)
 		return 1
 	}
-	// Spec §9.5: success emits no stdout.
-	return 0
+	return a.relay(resp)
 }
 
 func (a *App) runWait(args []string) int {
@@ -354,7 +404,7 @@ func (a *App) runWait(args []string) int {
 	after := fs.String("after", "", "checkpoint token from a prior snapshot or read")
 	forMode := fs.String("for", "", "match mode: sentinel|regex|quiescence")
 	timeoutMs := fs.Int("timeout-ms", 0, "wait timeout in milliseconds (required)")
-	sentinelToken := fs.String("token", "", "sentinel mode: literal token to expect in __DONE__:<token>:<exit>")
+	sentinelToken := fs.String("token", "", "sentinel mode: literal token to expect")
 	pattern := fs.String("pattern", "", "regex mode: RE2 pattern")
 	quietMs := fs.Int("ms", 0, "quiescence mode: required quiet window in ms")
 	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
@@ -369,132 +419,31 @@ func (a *App) runWait(args []string) int {
 	if e := validatePaneID(*pane); e != nil {
 		return a.emitCmdError(e)
 	}
-	if *timeoutMs <= 0 {
-		return a.emitCmdError(&domain.ErrorResponse{
-			PaneID:  *pane,
-			Code:    domain.ErrInvalidArgs,
-			Message: "wait requires a positive --timeout-ms",
-		})
-	}
-
-	var mode controller.WaitMode
-	var re *regexp.Regexp
-	switch *forMode {
-	case "sentinel":
-		mode = controller.WaitModeSentinel
-	case "quiescence":
-		mode = controller.WaitModeQuiescence
-	case "regex":
-		mode = controller.WaitModeRegex
-		if *pattern == "" {
-			return a.emitCmdError(&domain.ErrorResponse{
-				PaneID:  *pane,
-				Code:    domain.ErrInvalidArgs,
-				Message: "regex mode requires --pattern",
-			})
-		}
-		compiled, err := regexp.Compile(*pattern)
-		if err != nil {
-			return a.emitCmdError(&domain.ErrorResponse{
-				PaneID:  *pane,
-				Code:    domain.ErrInvalidRegex,
-				Message: "invalid --pattern: " + err.Error(),
-			})
-		}
-		re = compiled
-	case "":
-		return a.emitCmdError(&domain.ErrorResponse{
-			PaneID:  *pane,
-			Code:    domain.ErrInvalidArgs,
-			Message: "--for is required: one of sentinel|regex|quiescence",
-		})
-	default:
-		return a.emitCmdError(&domain.ErrorResponse{
-			PaneID:  *pane,
-			Code:    domain.ErrInvalidArgs,
-			Message: "unknown --for mode: " + *forMode,
-		})
-	}
-
-	ctrl, stop, cerr2, rerr := g.startController(context.Background())
-	if cerr2 != nil {
-		return a.emitCmdError(cerr2)
+	client, cerr, rerr := g.dial()
+	if cerr != nil {
+		return a.emitCmdError(cerr)
 	}
 	if rerr != nil {
 		fmt.Fprintf(a.Stderr, "tpctl wait: %v\n", rerr)
 		return 1
 	}
-	defer stop()
-
-	ctx, cancel := context.WithTimeout(context.Background(),
-		time.Duration(*timeoutMs)*time.Millisecond+time.Second) // grace
-	defer cancel()
-	resp, err := ctrl.Wait(ctx, controller.WaitRequest{
-		PaneID:        domain.PaneID(*pane),
+	grace := 2 * time.Second
+	total := time.Duration(*timeoutMs)*time.Millisecond + grace
+	resp, err := client.Call(&ipc.Request{
+		Op:            ipc.OpWait,
+		Pane:          domain.PaneID(*pane),
 		After:         domain.Token(*after),
-		Timeout:       time.Duration(*timeoutMs) * time.Millisecond,
-		Mode:          mode,
+		Mode:          *forMode,
 		SentinelToken: *sentinelToken,
-		QuietWindow:   time.Duration(*quietMs) * time.Millisecond,
-		Regex:         re,
-	})
+		Pattern:       *pattern,
+		QuietMs:       *quietMs,
+		TimeoutMs:     *timeoutMs,
+	}, total)
 	if err != nil {
-		var ce *domain.ErrorResponse
-		if errors.As(err, &ce) {
-			return a.emitCmdError(ce)
-		}
 		fmt.Fprintf(a.Stderr, "tpctl wait: %v\n", err)
 		return 1
 	}
-	return a.emitJSON(resp)
-}
-
-func (a *App) runRead(args []string) int {
-	fs := flag.NewFlagSet("read", flag.ContinueOnError)
-	fs.SetOutput(a.Stderr)
-	var g globalFlags
-	g.register(fs)
-	pane := registerPaneFlag(fs)
-	after := fs.String("after", "", "checkpoint token from a prior snapshot or read")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
-	if fs.NArg() != 0 {
-		return a.emitCmdError(&domain.ErrorResponse{
-			Code:    domain.ErrInvalidArgs,
-			Message: "read takes no positional arguments",
-		})
-	}
-	if e := validatePaneID(*pane); e != nil {
-		return a.emitCmdError(e)
-	}
-	if *after == "" {
-		// Spec §9.3: missing --after is MISSING_AFTER.
-		return a.emitCmdError(&domain.ErrorResponse{
-			PaneID:  *pane,
-			Code:    domain.ErrMissingAfter,
-			Message: "read requires --after; use snapshot to bootstrap",
-		})
-	}
-	ctrl, stop, cerr2, rerr := g.startController(context.Background())
-	if cerr2 != nil {
-		return a.emitCmdError(cerr2)
-	}
-	if rerr != nil {
-		fmt.Fprintf(a.Stderr, "tpctl read: %v\n", rerr)
-		return 1
-	}
-	defer stop()
-	resp, err := ctrl.Read(domain.PaneID(*pane), domain.Token(*after))
-	if err != nil {
-		var ce *domain.ErrorResponse
-		if errors.As(err, &ce) {
-			return a.emitCmdError(ce)
-		}
-		fmt.Fprintf(a.Stderr, "tpctl read: %v\n", err)
-		return 1
-	}
-	return a.emitJSON(resp)
+	return a.relay(resp)
 }
 
 // emitJSON writes a compact JSON payload followed by a newline to
