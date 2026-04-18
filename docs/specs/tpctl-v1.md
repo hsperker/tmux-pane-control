@@ -224,6 +224,25 @@ Use:
 - `code`
 - `message`
 
+### 8.3 Text normalization
+
+All text-bearing JSON fields in v1 use a single uniform representation:
+
+- **ANSI-stripped** — control sequences (CSI, OSC, etc.) are removed
+- **newline-normalized** — line endings are normalized to `\n`; carriage returns are not preserved
+- **trailing whitespace trimmed per line** — right-margin padding is removed, internal spacing and indentation are preserved
+- **trailing blank lines trimmed** — empty lines at the end of the field value are removed
+
+This applies uniformly to:
+
+- `snapshot.text`
+- `snapshot.scrollback_text`
+- `read.text`
+
+For `snapshot`, `text` represents the pane's **rendered visible screen rows**, not reconstructed logical shell lines. Wrapped output appears as the wrapped rows tmux is showing.
+
+This is not full terminal emulation. Spinners, progress bars, and other carriage-return-based redraw effects are flattened into their post-normalization text form.
+
 ---
 
 ## 9. Command contracts
@@ -315,7 +334,7 @@ Returns output after an explicit checkpoint token.
 {
   "pane_id": "%42",
   "next": "r_000220",
-  "text": "kubectl get pods\r\nNo resources found in default namespace.\r\n$ "
+  "text": "kubectl get pods\nNo resources found in default namespace.\n$ "
 }
 ```
 
