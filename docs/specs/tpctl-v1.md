@@ -510,6 +510,17 @@ On success, quiescence returns only `result: "quiescence"` and `next`. It does n
 
 Together with the send-ack guarantee of `text` and `key` (§9.4, §9.5), this makes the `snapshot → text → wait` pattern race-free: fast output produced between the send and the `wait` registration is not missed, because `wait` scans the retained stream from the token forward.
 
+### Concurrency
+
+Multiple `wait` calls against the same pane are fully supported. Each `wait` is a passive, read-only observer of the retained output stream; registering a `wait` does not acquire any exclusive lock on the pane.
+
+Consequences:
+
+- an agent may have any number of concurrent `wait`s outstanding on the same pane, with different checkpoint tokens, modes, and patterns
+- `wait`s compose freely with concurrent `read` calls on the same pane
+- each `wait` is evaluated independently and may succeed or time out on its own
+- `text` and `key` are serialized by the single-writer controller loop, but they do not block or cancel registered `wait`s
+
 ### Success example: sentinel
 
 ```json
