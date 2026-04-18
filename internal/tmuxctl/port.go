@@ -5,10 +5,19 @@
 package tmuxctl
 
 import (
+	"context"
 	"errors"
 
 	"github.com/hsperker/tmux-pane-control/internal/domain"
 )
+
+// PaneOutput carries a chunk of raw bytes emitted by a specific pane.
+// Ordering per pane is preserved by the adapter; ordering across panes
+// is not required.
+type PaneOutput struct {
+	ID   domain.PaneID
+	Data []byte
+}
 
 // ErrPaneNotFound is returned by Port operations when tmux reports that
 // the target pane does not exist. Handlers map it onto the canonical
@@ -26,4 +35,10 @@ type Port interface {
 	// raw text (pre-normalization). Returns ErrPaneNotFound if tmux
 	// reports the pane is missing.
 	CapturePane(id domain.PaneID) (string, error)
+
+	// Subscribe returns a channel that receives PaneOutput events
+	// for every byte appended to any pane on the tmux server. The
+	// channel is closed when ctx is cancelled or the subscription
+	// fails.
+	Subscribe(ctx context.Context) (<-chan PaneOutput, error)
 }

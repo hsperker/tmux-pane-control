@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/hsperker/tmux-pane-control/internal/controller"
 	"github.com/hsperker/tmux-pane-control/internal/domain"
-	"github.com/hsperker/tmux-pane-control/internal/store"
 	"github.com/hsperker/tmux-pane-control/internal/tmuxctl"
 )
 
@@ -93,6 +93,21 @@ func (g *globalFlags) portOrError() (tmuxctl.Port, *domain.ErrorResponse) {
 	}), nil
 }
 
+// startController builds a Controller wrapping the resolved port,
+// starts its subscription, and returns it plus a teardown function.
+// On subscription failure, a runtime error is returned instead.
+func (g *globalFlags) startController(ctx context.Context) (*controller.Controller, func(), *domain.ErrorResponse, error) {
+	port, cerr := g.portOrError()
+	if cerr != nil {
+		return nil, func() {}, cerr, nil
+	}
+	c := controller.New(port)
+	if err := c.Start(ctx); err != nil {
+		return nil, func() {}, nil, err
+	}
+	return c, c.Stop, nil, nil
+}
+
 // requirePaneFlag registers --pane on fs and returns a pointer to the
 // parsed value. It does not validate format; that happens post-parse.
 func registerPaneFlag(fs *flag.FlagSet) *string {
@@ -135,9 +150,11 @@ func (a *App) runList(args []string) int {
 	if cerr != nil {
 		return a.emitCmdError(cerr)
 	}
+	// list does not need an active subscription; the Port alone
+	// suffices. Calling the handler directly avoids the cost of
+	// starting up tracker goroutines.
 	resp, err := controller.List(port)
 	if err != nil {
-		// Runtime failure (spec §7.3): stderr, nonzero exit.
 		fmt.Fprintf(a.Stderr, "tpctl list: %v\n", err)
 		return 1
 	}
@@ -167,12 +184,20 @@ func (a *App) runSnapshot(args []string) int {
 		return a.emitCmdError(cerr)
 	}
 
-	// Each CLI invocation runs with a fresh, in-process store until
-	// slice 14 splits the controller into a long-lived daemon. That
-	// means snapshot tokens are only valid within this process and
-	// to any caller that still has this store — not across CLI calls.
-	st := store.New(store.DefaultCapacity)
-	resp, err := controller.Snapshot(port, st, domain.PaneID(*pane))
+	// Snapshot in slice 8 still runs with a per-invocation
+	// controller; slice 14 makes the controller long-lived so tokens
+	// survive across CLI calls.
+	_ = port // unused outside of startController, kept for symmetry
+	ctrl, stop, cerr2, rerr := g.startController(context.Background())
+	if cerr2 != nil {
+		return a.emitCmdError(cerr2)
+	}
+	if rerr != nil {
+		fmt.Fprintf(a.Stderr, "tpctl snapshot: %v\n", rerr)
+		return 1
+	}
+	defer stop()
+	resp, err := ctrl.Snapshot(domain.PaneID(*pane))
 	if err != nil {
 		var ce *domain.ErrorResponse
 		if errors.As(err, &ce) {
@@ -211,15 +236,16 @@ func (a *App) runRead(args []string) int {
 			Message: "read requires --after; use snapshot to bootstrap",
 		})
 	}
-	// Silence unused-port warning: port is not consulted in slice 7
-	// because the store is per-invocation and therefore has no
-	// output appended yet. Slice 8 wires the controller loop so the
-	// store is populated from live tmux output.
-	if _, cerr := g.portOrError(); cerr != nil {
-		return a.emitCmdError(cerr)
+	ctrl, stop, cerr2, rerr := g.startController(context.Background())
+	if cerr2 != nil {
+		return a.emitCmdError(cerr2)
 	}
-	st := store.New(store.DefaultCapacity)
-	resp, err := controller.Read(st, domain.PaneID(*pane), domain.Token(*after))
+	if rerr != nil {
+		fmt.Fprintf(a.Stderr, "tpctl read: %v\n", rerr)
+		return 1
+	}
+	defer stop()
+	resp, err := ctrl.Read(domain.PaneID(*pane), domain.Token(*after))
 	if err != nil {
 		var ce *domain.ErrorResponse
 		if errors.As(err, &ce) {
