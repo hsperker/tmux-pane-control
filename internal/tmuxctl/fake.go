@@ -7,6 +7,19 @@ import (
 	"github.com/hsperker/tmux-pane-control/internal/domain"
 )
 
+// FakeSendText captures one text send for inspection.
+type FakeSendText struct {
+	ID    domain.PaneID
+	Text  string
+	Enter bool
+}
+
+// FakeSendKeys captures one key send for inspection.
+type FakeSendKeys struct {
+	ID   domain.PaneID
+	Keys []string
+}
+
 // Fake is an in-memory Port for tests. Zero value is usable: no panes,
 // no errors.
 //
@@ -16,9 +29,13 @@ type Fake struct {
 	Screens       map[domain.PaneID]string
 	ListPanesFn   func() ([]domain.PaneID, error)
 	CapturePaneFn func(domain.PaneID) (string, error)
+	SendTextFn    func(domain.PaneID, string, bool) error
+	SendKeysFn    func(domain.PaneID, []string) error
 
-	mu   sync.Mutex
-	subs []chan PaneOutput
+	mu         sync.Mutex
+	subs       []chan PaneOutput
+	sentText   []FakeSendText
+	sentKeys   []FakeSendKeys
 }
 
 // ListPanes returns either the ListPanesFn result (if set) or the Panes
@@ -82,6 +99,42 @@ func (f *Fake) Emit(id domain.PaneID, data []byte) {
 	for _, c := range subs {
 		c <- PaneOutput{ID: id, Data: append([]byte(nil), data...)}
 	}
+}
+
+// SendText records the call and invokes SendTextFn if set.
+func (f *Fake) SendText(id domain.PaneID, text string, enter bool) error {
+	f.mu.Lock()
+	f.sentText = append(f.sentText, FakeSendText{ID: id, Text: text, Enter: enter})
+	f.mu.Unlock()
+	if f.SendTextFn != nil {
+		return f.SendTextFn(id, text, enter)
+	}
+	return nil
+}
+
+// SendKeys records the call and invokes SendKeysFn if set.
+func (f *Fake) SendKeys(id domain.PaneID, keys []string) error {
+	f.mu.Lock()
+	f.sentKeys = append(f.sentKeys, FakeSendKeys{ID: id, Keys: append([]string(nil), keys...)})
+	f.mu.Unlock()
+	if f.SendKeysFn != nil {
+		return f.SendKeysFn(id, keys)
+	}
+	return nil
+}
+
+// SentText returns a copy of the recorded text sends for assertions.
+func (f *Fake) SentText() []FakeSendText {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]FakeSendText(nil), f.sentText...)
+}
+
+// SentKeys returns a copy of the recorded key sends for assertions.
+func (f *Fake) SentKeys() []FakeSendKeys {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]FakeSendKeys(nil), f.sentKeys...)
 }
 
 // Ensure Fake satisfies Port at compile time.

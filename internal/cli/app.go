@@ -60,6 +60,10 @@ func (a *App) Run(args []string) int {
 		return a.runSnapshot(args[1:])
 	case "read":
 		return a.runRead(args[1:])
+	case "text":
+		return a.runText(args[1:])
+	case "key":
+		return a.runKey(args[1:])
 	default:
 		fmt.Fprintf(a.Stderr, "tpctl: unknown command %q\n\n%s", args[0], Usage)
 		return 2
@@ -112,6 +116,58 @@ func (g *globalFlags) startController(ctx context.Context) (*controller.Controll
 // parsed value. It does not validate format; that happens post-parse.
 func registerPaneFlag(fs *flag.FlagSet) *string {
 	return fs.String("pane", "", "target pane id, e.g. %42")
+}
+
+// reorderArgs promotes all flags ahead of positionals so Go's flag
+// package (which stops at the first non-flag) accepts the POSIX
+// interleaved style of spec §9 examples, e.g.
+//
+//	tpctl text --pane %42 "payload" --enter
+//
+// boolFlags must name every flag that does NOT take a value so we
+// can tell whether the next token is a value or a positional.
+// A literal "--" argument ends option parsing; everything after is
+// positional.
+func reorderArgs(args []string, boolFlags map[string]bool) []string {
+	var flags, positionals []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			positionals = append(positionals, args[i+1:]...)
+			break
+		}
+		if len(a) > 2 && a[:2] == "--" {
+			name := a[2:]
+			if eq := strings.IndexByte(name, '='); eq >= 0 {
+				flags = append(flags, a)
+				continue
+			}
+			flags = append(flags, a)
+			if !boolFlags[name] && i+1 < len(args) {
+				flags = append(flags, args[i+1])
+				i++
+			}
+			continue
+		}
+		if len(a) > 1 && a[0] == '-' && a[1] != '-' {
+			flags = append(flags, a)
+			continue
+		}
+		positionals = append(positionals, a)
+	}
+	out := make([]string, 0, len(flags)+len(positionals)+1)
+	out = append(out, flags...)
+	out = append(out, "--")
+	out = append(out, positionals...)
+	return out
+}
+
+// boolFlagsCommon lists the boolean flags recognized by every
+// subcommand. Subcommand-specific bool flags are merged in at call
+// sites.
+var boolFlagsCommon = map[string]bool{
+	"help": true,
+	"h":    true,
 }
 
 // validatePaneID rejects empty or non-"%"-prefixed pane identifiers.
@@ -207,6 +263,82 @@ func (a *App) runSnapshot(args []string) int {
 		return 1
 	}
 	return a.emitJSON(resp)
+}
+
+func (a *App) runText(args []string) int {
+	fs := flag.NewFlagSet("text", flag.ContinueOnError)
+	fs.SetOutput(a.Stderr)
+	var g globalFlags
+	g.register(fs)
+	pane := registerPaneFlag(fs)
+	enter := fs.Bool("enter", false, "append an Enter key press after the literal payload")
+	bools := map[string]bool{"enter": true}
+	for k, v := range boolFlagsCommon {
+		bools[k] = v
+	}
+	if err := fs.Parse(reorderArgs(args, bools)); err != nil {
+		return 2
+	}
+	// Spec §9.4: exactly one positional text argument.
+	if fs.NArg() != 1 {
+		return a.emitCmdError(&domain.ErrorResponse{
+			Code:    domain.ErrInvalidArgs,
+			Message: "text requires exactly one positional text argument",
+		})
+	}
+	payload := fs.Arg(0)
+	if e := validatePaneID(*pane); e != nil {
+		return a.emitCmdError(e)
+	}
+	port, cerr := g.portOrError()
+	if cerr != nil {
+		return a.emitCmdError(cerr)
+	}
+	if err := controller.SendText(port, domain.PaneID(*pane), payload, *enter); err != nil {
+		var ce *domain.ErrorResponse
+		if errors.As(err, &ce) {
+			return a.emitCmdError(ce)
+		}
+		fmt.Fprintf(a.Stderr, "tpctl text: %v\n", err)
+		return 1
+	}
+	// Spec §9.4: success emits no stdout.
+	return 0
+}
+
+func (a *App) runKey(args []string) int {
+	fs := flag.NewFlagSet("key", flag.ContinueOnError)
+	fs.SetOutput(a.Stderr)
+	var g globalFlags
+	g.register(fs)
+	pane := registerPaneFlag(fs)
+	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
+		return 2
+	}
+	keys := fs.Args()
+	if len(keys) == 0 {
+		return a.emitCmdError(&domain.ErrorResponse{
+			Code:    domain.ErrInvalidArgs,
+			Message: "key requires at least one key token",
+		})
+	}
+	if e := validatePaneID(*pane); e != nil {
+		return a.emitCmdError(e)
+	}
+	port, cerr := g.portOrError()
+	if cerr != nil {
+		return a.emitCmdError(cerr)
+	}
+	if err := controller.SendKeys(port, domain.PaneID(*pane), keys); err != nil {
+		var ce *domain.ErrorResponse
+		if errors.As(err, &ce) {
+			return a.emitCmdError(ce)
+		}
+		fmt.Fprintf(a.Stderr, "tpctl key: %v\n", err)
+		return 1
+	}
+	// Spec §9.5: success emits no stdout.
+	return 0
 }
 
 func (a *App) runRead(args []string) int {
