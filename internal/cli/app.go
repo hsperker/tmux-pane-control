@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/hsperker/tmux-pane-control/internal/controller"
 	"github.com/hsperker/tmux-pane-control/internal/domain"
@@ -64,6 +65,8 @@ func (a *App) Run(args []string) int {
 		return a.runText(args[1:])
 	case "key":
 		return a.runKey(args[1:])
+	case "wait":
+		return a.runWait(args[1:])
 	default:
 		fmt.Fprintf(a.Stderr, "tpctl: unknown command %q\n\n%s", args[0], Usage)
 		return 2
@@ -339,6 +342,96 @@ func (a *App) runKey(args []string) int {
 	}
 	// Spec §9.5: success emits no stdout.
 	return 0
+}
+
+func (a *App) runWait(args []string) int {
+	fs := flag.NewFlagSet("wait", flag.ContinueOnError)
+	fs.SetOutput(a.Stderr)
+	var g globalFlags
+	g.register(fs)
+	pane := registerPaneFlag(fs)
+	after := fs.String("after", "", "checkpoint token from a prior snapshot or read")
+	forMode := fs.String("for", "", "match mode: sentinel|regex|quiescence")
+	timeoutMs := fs.Int("timeout-ms", 0, "wait timeout in milliseconds (required)")
+	sentinelToken := fs.String("token", "", "sentinel mode: literal token to expect in __DONE__:<token>:<exit>")
+	// Regex and quiescence flags are wired here so the FlagSet
+	// recognises them (slice 12/13 activate the handlers); for slice
+	// 11 their values are unused.
+	_ = fs.String("pattern", "", "regex mode: RE2 pattern")
+	_ = fs.Int("ms", 0, "quiescence mode: required quiet window in ms")
+	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		return a.emitCmdError(&domain.ErrorResponse{
+			Code:    domain.ErrInvalidArgs,
+			Message: "wait takes no positional arguments",
+		})
+	}
+	if e := validatePaneID(*pane); e != nil {
+		return a.emitCmdError(e)
+	}
+	if *timeoutMs <= 0 {
+		return a.emitCmdError(&domain.ErrorResponse{
+			PaneID:  *pane,
+			Code:    domain.ErrInvalidArgs,
+			Message: "wait requires a positive --timeout-ms",
+		})
+	}
+
+	var mode controller.WaitMode
+	switch *forMode {
+	case "sentinel":
+		mode = controller.WaitModeSentinel
+	case "regex", "quiescence":
+		return a.emitCmdError(&domain.ErrorResponse{
+			PaneID:  *pane,
+			Code:    domain.ErrInvalidArgs,
+			Message: "--for " + *forMode + " is not implemented yet",
+		})
+	case "":
+		return a.emitCmdError(&domain.ErrorResponse{
+			PaneID:  *pane,
+			Code:    domain.ErrInvalidArgs,
+			Message: "--for is required: one of sentinel|regex|quiescence",
+		})
+	default:
+		return a.emitCmdError(&domain.ErrorResponse{
+			PaneID:  *pane,
+			Code:    domain.ErrInvalidArgs,
+			Message: "unknown --for mode: " + *forMode,
+		})
+	}
+
+	ctrl, stop, cerr2, rerr := g.startController(context.Background())
+	if cerr2 != nil {
+		return a.emitCmdError(cerr2)
+	}
+	if rerr != nil {
+		fmt.Fprintf(a.Stderr, "tpctl wait: %v\n", rerr)
+		return 1
+	}
+	defer stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(),
+		time.Duration(*timeoutMs)*time.Millisecond+time.Second) // grace
+	defer cancel()
+	resp, err := ctrl.Wait(ctx, controller.WaitRequest{
+		PaneID:        domain.PaneID(*pane),
+		After:         domain.Token(*after),
+		Timeout:       time.Duration(*timeoutMs) * time.Millisecond,
+		Mode:          mode,
+		SentinelToken: *sentinelToken,
+	})
+	if err != nil {
+		var ce *domain.ErrorResponse
+		if errors.As(err, &ce) {
+			return a.emitCmdError(ce)
+		}
+		fmt.Fprintf(a.Stderr, "tpctl wait: %v\n", err)
+		return 1
+	}
+	return a.emitJSON(resp)
 }
 
 func (a *App) runRead(args []string) int {

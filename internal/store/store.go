@@ -18,6 +18,13 @@ const DefaultCapacity = 1 << 20
 // appropriate command-level code.
 var ErrPaneUnknown = errors.New("pane not known to store")
 
+// paneWatcher is a buffered signal channel for one observer of a
+// specific pane's append stream.
+type paneWatcher struct {
+	pane domain.PaneID
+	ch   chan struct{}
+}
+
 // Store holds per-pane output buffers and mediates checkpoint tokens.
 // Methods are safe for concurrent use.
 type Store struct {
@@ -25,6 +32,7 @@ type Store struct {
 	capacity int
 	instance string
 	bufs     map[domain.PaneID]*Buffer
+	watchers []*paneWatcher
 }
 
 // New returns a store with the given per-pane capacity. The instance
@@ -74,18 +82,63 @@ func (s *Store) HasPane(id domain.PaneID) bool {
 }
 
 // Forget drops the buffer for id. Called when a pane is destroyed
-// (spec §11.9).
+// (spec §11.9). It also signals every watcher for this pane so
+// pending waits can notice the pane is gone.
 func (s *Store) Forget(id domain.PaneID) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.bufs, id)
+	for _, w := range s.watchers {
+		if w.pane != id {
+			continue
+		}
+		select {
+		case w.ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
-// Append writes output bytes for the given pane.
+// Append writes output bytes for the given pane and signals every
+// watcher registered for that pane. The signal is edge-triggered
+// (coalesced): a watcher that already has a pending signal is a no-op.
 func (s *Store) Append(id domain.PaneID, p []byte) {
+	if len(p) == 0 {
+		return
+	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.bufferLocked(id).Append(p)
+	// Notify watchers under the lock to avoid a race with Forget.
+	for _, w := range s.watchers {
+		if w.pane != id {
+			continue
+		}
+		select {
+		case w.ch <- struct{}{}:
+		default:
+		}
+	}
+	s.mu.Unlock()
+}
+
+// Watch registers an observer for the given pane. The returned
+// channel receives a (possibly coalesced) signal after every Append
+// or Forget that involves this pane. The cancel func unregisters.
+func (s *Store) Watch(id domain.PaneID) (<-chan struct{}, func()) {
+	w := &paneWatcher{pane: id, ch: make(chan struct{}, 1)}
+	s.mu.Lock()
+	s.watchers = append(s.watchers, w)
+	s.mu.Unlock()
+	return w.ch, func() {
+		s.mu.Lock()
+		for i, x := range s.watchers {
+			if x == w {
+				s.watchers = append(s.watchers[:i], s.watchers[i+1:]...)
+				break
+			}
+		}
+		s.mu.Unlock()
+	}
 }
 
 // NewToken returns a token pointing at the current stream head for
