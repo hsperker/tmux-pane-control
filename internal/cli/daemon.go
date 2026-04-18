@@ -64,11 +64,18 @@ func (a *App) runDaemon(args []string) int {
 		Shutdown:   cancel,
 	}
 
-	// Propagate SIGINT/SIGTERM into ctx so Serve unwinds.
+	// Propagate SIGINT/SIGTERM and controller-observed tmux server
+	// loss (spec §11.9 Exit mode) into ctx so Serve unwinds.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	serverLost := false
 	go func() {
-		<-sigCh
+		select {
+		case <-sigCh:
+		case <-ctrl.ServerLost():
+			serverLost = true
+			fmt.Fprintln(a.Stderr, "tpctl daemon: tmux server connection lost; exiting")
+		}
 		cancel()
 	}()
 
@@ -78,5 +85,11 @@ func (a *App) runDaemon(args []string) int {
 		return 1
 	}
 	ctrl.Stop()
+	if serverLost {
+		// Runtime failure per §7.3: nonzero exit so supervisors and
+		// the next CLI invocation's auto-spawn know a fresh
+		// controller is needed.
+		return 1
+	}
 	return 0
 }

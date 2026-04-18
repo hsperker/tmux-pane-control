@@ -135,6 +135,19 @@ func (f *Fake) EmitClosed(id domain.PaneID) {
 	}
 }
 
+// EmitServerLost signals tmux server loss (spec §11.9 controller-
+// level event). Subscribers see a PaneOutput with ServerLost=true.
+// The real adapter emits this at most once per subscription; the
+// fake does not enforce that — tests should not emit it twice.
+func (f *Fake) EmitServerLost() {
+	f.mu.Lock()
+	subs := append([]chan PaneOutput(nil), f.subs...)
+	f.mu.Unlock()
+	for _, c := range subs {
+		c <- PaneOutput{ServerLost: true}
+	}
+}
+
 // SendText records the call and invokes SendTextFn if set.
 func (f *Fake) SendText(id domain.PaneID, text string, enter bool) error {
 	f.mu.Lock()

@@ -34,12 +34,24 @@ func (a *Adapter) Subscribe(ctx context.Context) (<-chan PaneOutput, error) {
 // is one `tmux list-panes` call.
 const subPollInterval = 200 * time.Millisecond
 
+// serverLostThreshold is the number of consecutive list-panes
+// failures that triggers a ServerLost event (spec §11.9). At the
+// 200ms poll interval, 3 failures ≈ 600ms of persistent failure —
+// long enough to ignore transient blips, short enough that callers
+// don't wait forever. This is a heuristic; see §11.9 non-normative
+// notes in the plan retrospective.
+const serverLostThreshold = 3
+
 type subscription struct {
 	adapter  *Adapter
 	out      chan PaneOutput
 	mu       sync.Mutex
 	trackers map[domain.PaneID]*paneTracker
 	wg       sync.WaitGroup
+
+	// Detection state for spec §11.9 tmux server loss.
+	consecutiveListFailures int
+	lostNotified            bool
 }
 
 func (s *subscription) run(ctx context.Context) {
@@ -60,13 +72,26 @@ func (s *subscription) run(ctx context.Context) {
 }
 
 // sync diffs tmux's current pane set against the tracked set and
-// starts/stops trackers as needed. Errors from list-panes are swallowed
-// because they are typically transient (e.g. server exiting).
+// starts/stops trackers as needed. Persistent list-panes failures
+// are interpreted as tmux server loss per spec §11.9 and surfaced
+// as a one-shot ServerLost event.
 func (s *subscription) sync(ctx context.Context) {
 	panes, err := s.adapter.ListPanes()
 	if err != nil {
+		s.consecutiveListFailures++
+		if s.consecutiveListFailures >= serverLostThreshold && !s.lostNotified {
+			s.lostNotified = true
+			select {
+			case s.out <- PaneOutput{ServerLost: true}:
+			case <-ctx.Done():
+			}
+		}
 		return
 	}
+	s.consecutiveListFailures = 0
+	// lostNotified stays sticky: once we've told the controller the
+	// server is gone, we do not retract that signal. The controller
+	// is expected to be shutting down in response.
 	seen := make(map[domain.PaneID]struct{}, len(panes))
 	for _, p := range panes {
 		seen[p] = struct{}{}

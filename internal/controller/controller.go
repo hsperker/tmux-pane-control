@@ -17,10 +17,12 @@ type Controller struct {
 	port  tmuxctl.Port
 	store *store.Store
 
-	startOnce sync.Once
-	startErr  error
-	cancel    context.CancelFunc
-	done      chan struct{}
+	startOnce  sync.Once
+	startErr   error
+	cancel     context.CancelFunc
+	done       chan struct{}
+	serverLost chan struct{}
+	lostOnce   sync.Once
 }
 
 // New builds a controller with the spec-default per-pane retention
@@ -32,8 +34,19 @@ func New(port tmuxctl.Port) *Controller {
 // NewWithCapacity lets tests construct a controller with a small
 // ring-buffer capacity, making eviction cheap to trigger.
 func NewWithCapacity(port tmuxctl.Port, capacity int) *Controller {
-	return &Controller{port: port, store: store.New(capacity)}
+	return &Controller{
+		port:       port,
+		store:      store.New(capacity),
+		serverLost: make(chan struct{}),
+	}
 }
+
+// ServerLost returns a channel that closes when the controller
+// observes tmux server loss (spec §11.9). Callers typically select
+// on this alongside signal channels to trigger daemon shutdown in
+// Exit mode. Idempotent: the channel is only ever closed, never
+// reopened.
+func (c *Controller) ServerLost() <-chan struct{} { return c.serverLost }
 
 // Store exposes the underlying store for diagnostics and tests.
 func (c *Controller) Store() *store.Store { return c.store }
@@ -59,16 +72,21 @@ func (c *Controller) Start(ctx context.Context) error {
 
 // drain copies subscription events into the store. It exits when the
 // subscription channel closes (on ctx cancellation or adapter teardown).
-// Closed events cause Forget so pending waits see the pane destruction
-// per spec §11.9.
+//   - Closed events cause Forget so pending waits see the pane
+//     destruction per spec §11.9.
+//   - ServerLost events close ServerLost() so the daemon main can
+//     trigger Exit-mode shutdown per spec §11.9.
 func (c *Controller) drain(ch <-chan tmuxctl.PaneOutput) {
 	defer close(c.done)
 	for ev := range ch {
-		if ev.Closed {
+		switch {
+		case ev.ServerLost:
+			c.lostOnce.Do(func() { close(c.serverLost) })
+		case ev.Closed:
 			c.store.Forget(ev.ID)
-			continue
+		default:
+			c.store.Append(ev.ID, ev.Data)
 		}
-		c.store.Append(ev.ID, ev.Data)
 	}
 }
 

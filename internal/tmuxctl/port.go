@@ -11,14 +11,23 @@ import (
 	"github.com/hsperker/tmux-pane-control/internal/domain"
 )
 
-// PaneOutput carries a per-pane event from the subscription. A
-// non-nil Data means new bytes were appended; Closed=true means the
-// pane has been destroyed (spec §11.9) and should be forgotten by
-// the store. Ordering per pane is preserved by the adapter.
+// PaneOutput carries one event from the subscription. Exactly one of
+// the three event shapes is set per message:
+//
+//   - Data != nil: fresh bytes appended to pane ID.
+//   - Closed == true: pane ID has been destroyed (spec §11.9).
+//   - ServerLost == true: the tmux server itself has gone away. Per
+//     spec §11.9 this is a controller-level event, not a pane-level
+//     one; ID is ignored. The adapter emits this at most once per
+//     subscription lifetime, after detecting persistent failure to
+//     reach the server.
+//
+// Ordering per pane is preserved by the adapter.
 type PaneOutput struct {
-	ID     domain.PaneID
-	Data   []byte
-	Closed bool
+	ID         domain.PaneID
+	Data       []byte
+	Closed     bool
+	ServerLost bool
 }
 
 // ErrPaneNotFound is returned by Port operations when tmux reports that
