@@ -558,6 +558,39 @@ If the initial connect fails:
 
 If the controller restarts, all previously issued checkpoint tokens are invalidated. The agent must call `snapshot` to obtain a new token. This matches the token lifetime rule in §4.3.
 
+### 11.8 Output stream retention
+
+The controller retains a bounded in-memory output stream per pane using a ring buffer.
+
+Policy for v1:
+
+- the retention budget is **1 MiB per pane**, measured in bytes of pane output
+- when new output would exceed the budget, the oldest retained output for that pane is evicted
+- any checkpoint token that points before the new retained start becomes invalid
+
+If a command is invoked with a token that refers to evicted output, it must fail with `INVALID_AFTER`:
+
+```json
+{
+  "pane_id": "%42",
+  "code": "INVALID_AFTER",
+  "message": "checkpoint token is no longer retained"
+}
+```
+
+Rationale:
+
+- bytes (not lines) are simpler and more predictable, avoid line-splitting edge cases, and work uniformly for shell output and TUI chatter
+- a fixed per-pane cap keeps memory bounded and behavior easy to explain
+- very high-volume panes may invalidate old tokens relatively quickly; this is an accepted trade-off for v1
+
+Explicitly out of scope for v1:
+
+- multi-dimensional policies (e.g. "N lines or M bytes")
+- global LRU fairness across panes
+- persistence across controller restarts
+- configurable retention exposed in the public API
+
 ---
 
 ## 12. Suggested internal structure
