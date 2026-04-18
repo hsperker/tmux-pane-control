@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/hsperker/tmux-pane-control/internal/domain"
+	"github.com/hsperker/tmux-pane-control/internal/textnorm"
 	"github.com/hsperker/tmux-pane-control/internal/tmuxctl"
 )
 
@@ -29,6 +30,6 @@ func Snapshot(port tmuxctl.Port, issuer TokenIssuer, id domain.PaneID) (*domain.
 	return &domain.SnapshotResponse{
 		PaneID: id,
 		Next:   issuer.Next(id),
-		Text:   text,
+		Text:   textnorm.Normalize(text),
 	}, nil
 }
