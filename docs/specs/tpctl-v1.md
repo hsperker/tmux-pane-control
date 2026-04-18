@@ -386,11 +386,21 @@ Sends literal text to a pane.
 ### Required arguments
 
 - `--pane %...`
-- text argument
+- **exactly one** positional text argument
+
+Passing zero or more than one positional argument is a command-level error.
 
 ### Optional arguments
 
 - `--enter`
+
+### Argument rules
+
+- the text payload is sent **literally**, including embedded newlines if present
+- an empty payload is valid: `tpctl text --pane %42 "" --enter` means "press Enter after sending nothing"
+- `--enter` appends an `Enter` key press after the literal payload has been sent; it is **not** equivalent to appending `\n` to the payload
+- `--enter` does not rewrite, trim, or normalize the supplied text — a trailing newline in the payload plus `--enter` results in `\n` followed by `Enter`
+- there is no `--no-enter` flag; absence of `--enter` is the opposite
 
 ### Success behavior
 
