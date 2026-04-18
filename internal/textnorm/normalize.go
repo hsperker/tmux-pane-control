@@ -33,10 +33,29 @@ func Normalize(s string) string {
 }
 
 // StripANSI removes ANSI escape sequences but preserves newlines,
-// carriage returns, and trailing whitespace. Spec §9.6 requires this
-// representation for wait match input (ANSI-stripped only, unlike the
-// full §8.3 normalization used for text-bearing JSON fields).
+// carriage returns, and trailing whitespace. Useful when a caller
+// needs ANSI removal without any other normalization.
 func StripANSI(s string) string { return stripANSI(s) }
+
+// StripANSIAndCR applies spec §9.6's match-input normalization:
+//  1. remove ANSI / ESC-introduced control sequences
+//  2. remove carriage returns — \r\n collapses to \n, stray \r drops
+//
+// Newlines (\n) are preserved. Trailing-whitespace trimming and
+// trailing-blank-line trimming are deliberately NOT applied; those
+// belong to §8.3 (text-bearing JSON fields), not to wait match input.
+//
+// This matters for RE2 multiline anchors: `(?m)^ready$` matching
+// against "ready\r\n" fails if \r is preserved, because \r sits
+// between "ready" and the end-of-line anchor. Stripping \r first
+// makes the regex behave as written.
+func StripANSIAndCR(s string) string {
+	s = stripANSI(s)
+	if strings.IndexByte(s, '\r') >= 0 {
+		s = strings.ReplaceAll(s, "\r", "")
+	}
+	return s
+}
 
 // stripANSI removes ANSI escape sequences. It's a small hand-rolled
 // state machine to keep the package dependency-free. The grammar

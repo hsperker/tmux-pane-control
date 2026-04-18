@@ -124,7 +124,7 @@ func Wait(ctx context.Context, st *store.Store, req WaitRequest) (*domain.WaitRe
 
 		switch req.Mode {
 		case WaitModeSentinel:
-			stripped := textnorm.StripANSI(string(bytes))
+			stripped := textnorm.StripANSIAndCR(string(bytes))
 			if m, ok := waiter.MatchSentinel([]byte(stripped), req.SentinelToken); ok {
 				return &domain.WaitResponse{
 					PaneID:   req.PaneID,
@@ -135,7 +135,7 @@ func Wait(ctx context.Context, st *store.Store, req WaitRequest) (*domain.WaitRe
 				}, nil
 			}
 		case WaitModeRegex:
-			stripped := textnorm.StripANSI(string(bytes))
+			stripped := textnorm.StripANSIAndCR(string(bytes))
 			if m, ok := waiter.MatchRegex([]byte(stripped), req.Regex); ok {
 				return &domain.WaitResponse{
 					PaneID:  req.PaneID,

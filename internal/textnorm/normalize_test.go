@@ -1,6 +1,18 @@
 package textnorm
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
+
+func regexpMustCompile(t *testing.T, p string) *regexp.Regexp {
+	t.Helper()
+	re, err := regexp.Compile(p)
+	if err != nil {
+		t.Fatalf("compile %q: %v", p, err)
+	}
+	return re
+}
 
 func TestNormalize(t *testing.T) {
 	cases := []struct {
@@ -35,6 +47,60 @@ func TestNormalize(t *testing.T) {
 				t.Fatalf("Normalize(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStripANSIAndCR(t *testing.T) {
+	// Spec §9.6 match input: ANSI + CR removed, newlines and
+	// interior whitespace preserved (unlike §8.3 Normalize, which
+	// also trims).
+	cases := []struct {
+		name, in, want string
+	}{
+		{"plain", "hello", "hello"},
+		{"crlf_collapses", "ready\r\n", "ready\n"},
+		{"stray_cr", "ab\rcd", "abcd"},
+		{"crlf_twice", "a\r\nb\r\n", "a\nb\n"},
+		{"ansi_plus_crlf", "\x1b[32mready\x1b[0m\r\n", "ready\n"},
+		{"trailing_ws_preserved", "ready   \n", "ready   \n"},
+		{"trailing_blank_preserved", "ready\n\n", "ready\n\n"},
+		{"indent_preserved", "    hi\n", "    hi\n"},
+		{"no_cr_fastpath", "plain\nlines", "plain\nlines"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := StripANSIAndCR(tc.in)
+			if got != tc.want {
+				t.Fatalf("StripANSIAndCR(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStripANSIAndCR_RE2MultilineAnchor pins the real motivation for
+// §9.6's CR rule: (?m)^ready$ must match against the CR-terminated
+// form that TTY output produces. With CR preserved, the anchor sits
+// between \r and \n and fails.
+func TestStripANSIAndCR_RE2MultilineAnchor(t *testing.T) {
+	input := "prefix\r\nready\r\nsuffix\r\n"
+	normalized := StripANSIAndCR(input)
+
+	// Sanity check the normalization shape.
+	if normalized != "prefix\nready\nsuffix\n" {
+		t.Fatalf("unexpected normalization: %q", normalized)
+	}
+
+	// (?m)^ready$ must match against the normalized buffer.
+	pattern := `(?m)^ready$`
+	re := regexpMustCompile(t, pattern)
+	if !re.MatchString(normalized) {
+		t.Fatalf("%q did not match %q (CR-strip is not in effect)", pattern, normalized)
+	}
+
+	// And the regression: the same pattern would NOT match the raw
+	// input, which is the behavior the spec rule fixes.
+	if re.MatchString(input) {
+		t.Fatalf("%q matched raw CRLF input unexpectedly — test is not covering the regression case", pattern)
 	}
 }
 

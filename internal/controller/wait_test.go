@@ -11,6 +11,31 @@ import (
 	"github.com/hsperker/tmux-pane-control/internal/store"
 )
 
+// TestWait_Regex_MultilineAnchorAgainstCRLF pins spec §9.6's CR-strip
+// rule end-to-end. TTY output routinely ends lines with \r\n; a
+// regex like (?m)^ready$ must still match, which only works if the
+// wait handler normalizes \r before running the matcher.
+func TestWait_Regex_MultilineAnchorAgainstCRLF(t *testing.T) {
+	s := store.New(1024)
+	tok := s.NewToken("%42")
+	s.Append("%42", []byte("prefix\r\nready\r\nsuffix\r\n"))
+
+	re := regexp.MustCompile(`(?m)^ready$`)
+	resp, err := Wait(context.Background(), s, WaitRequest{
+		PaneID: "%42", After: tok, Timeout: time.Second,
+		Mode: WaitModeRegex, Regex: re,
+	})
+	if err != nil {
+		t.Fatalf("Wait: %v (CR likely not stripped before match)", err)
+	}
+	if resp.Result != domain.WaitRegex {
+		t.Fatalf("result = %q", resp.Result)
+	}
+	if resp.Matched == nil || *resp.Matched != "ready" {
+		t.Fatalf("matched = %v, want \"ready\"", resp.Matched)
+	}
+}
+
 func TestWait_Sentinel_AlreadyBuffered(t *testing.T) {
 	// Spec §9.6: wait considers already-buffered post-token output
 	// at registration time, not just future arrivals.
