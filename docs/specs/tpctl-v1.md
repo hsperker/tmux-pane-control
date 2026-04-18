@@ -220,6 +220,7 @@ Use:
 - `scrollback_text`
 - `result`
 - `matched`
+- `exit_code`
 - `code`
 - `message`
 
@@ -427,6 +428,12 @@ Waits on output **after an explicit checkpoint token**.
 - `--timeout-ms N`
 - one of the `--for ...` modes below
 
+### Match input
+
+All match modes operate on the **ANSI-stripped post-checkpoint output stream**, treated as one continuous text buffer including newlines. Control sequences (CSI, OSC, etc.) are removed before matching.
+
+This is not full terminal emulation. For rich TUIs, use `--for quiescence` followed by `snapshot`.
+
 ### Supported modes in v1
 
 #### Sentinel mode
@@ -435,11 +442,36 @@ Waits on output **after an explicit checkpoint token**.
 tpctl wait --pane %42 --after TOKEN --for sentinel --token abc123 --timeout-ms 5000
 ```
 
+Sentinel mode searches for the structured form:
+
+```text
+__DONE__:<token>:<exit-code>
+```
+
+where:
+
+- `__DONE__:` is the fixed prefix
+- `<token>` is the literal value passed via `--token`
+- `<exit-code>` is one or more decimal digits
+
+On success, the response includes the full `matched` sentinel and the parsed `exit_code` as an integer.
+
+Constraints on `--token` values in v1:
+
+- must not contain `:`
+- must not contain newline
+
+This keeps parsing unambiguous.
+
 #### Regex mode
 
 ```bash
 tpctl wait --pane %42 --after TOKEN --for regex --pattern "READY" --timeout-ms 5000
 ```
+
+Regex mode uses **RE2** (the Go `regexp` flavor). RE2 does not support backreferences or lookaround; this is intentional for bounded-time matching.
+
+No implicit anchoring is applied. The pattern is evaluated against the full post-checkpoint text buffer. By default `.` does not match newline; use `(?s)` to enable dotall if needed.
 
 #### Quiescence mode
 
@@ -464,7 +496,8 @@ Together with the send-ack guarantee of `text` and `key` (§9.4, §9.5), this ma
   "pane_id": "%42",
   "next": "r_000240",
   "result": "sentinel",
-  "matched": "__DONE__:abc123:0"
+  "matched": "__DONE__:abc123:0",
+  "exit_code": 0
 }
 ```
 
