@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"tpctl-conformance/harness"
+	"github.com/hsperker/tmux-pane-control/conformance/harness"
 )
 
 // TestExt_MutuallyExclusiveSocketFlags — spec §11.4 says passing

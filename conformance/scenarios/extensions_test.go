@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"tpctl-conformance/harness"
+	"github.com/hsperker/tmux-pane-control/conformance/harness"
 )
 
 // §6.1 — CLI implementations must accept flags and positional

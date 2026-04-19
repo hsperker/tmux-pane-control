@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"tpctl-conformance/harness"
+	"github.com/hsperker/tmux-pane-control/conformance/harness"
 )
 
 // C36 — command-level failures emit structured JSON on stdout with

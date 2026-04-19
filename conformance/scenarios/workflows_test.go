@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"tpctl-conformance/harness"
+	"github.com/hsperker/tmux-pane-control/conformance/harness"
 )
 
 // TestWorkflow_LongBuildWithSentinel — the canonical
