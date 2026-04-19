@@ -21,6 +21,7 @@ import (
 // arguments in interleaved order. The `--` sentinel ends flag
 // parsing.
 func TestExt_ArgParsingInterleaved(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -35,7 +36,7 @@ func TestExt_ArgParsingInterleaved(t *testing.T) {
 		e.Run(args...).MustMuted(t)
 	}
 	// Verify both markers landed.
-	e.WaitForText(t, pane, "hello-interleaved-2", 2*time.Second)
+	e.WaitForText(t, pane, "hello-interleaved-2", 5*time.Second)
 
 	var r harness.ReadResponse
 	e.Run("read", "--pane", pane, "--after", snap.Next).MustJSON(t, &r)
@@ -51,12 +52,13 @@ func TestExt_ArgParsingInterleaved(t *testing.T) {
 // the sentinel; the single positional after `--` is then the
 // literal payload, which we verify shows up unchanged.
 func TestExt_DoubleDashSentinel(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
 
 	e.Run("text", "--pane", pane, "--enter", "--", "echo --looks-like-flag-c6a").MustMuted(t)
-	e.WaitForText(t, pane, "--looks-like-flag-c6a", 2*time.Second)
+	e.WaitForText(t, pane, "--looks-like-flag-c6a", 5*time.Second)
 
 	var r harness.ReadResponse
 	e.Run("read", "--pane", pane, "--after", snap.Next).MustJSON(t, &r)
@@ -68,6 +70,7 @@ func TestExt_DoubleDashSentinel(t *testing.T) {
 // §6.2 — global flags (--tmux-socket, --tmux-socket-name, --help)
 // must work both before and after the subcommand.
 func TestExt_GlobalFlagsBeforeSubcommand(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	// Pre-subcommand space form.
 	r := e.RunArgs("--tmux-socket", e.TmuxSocket(), "list")
@@ -79,6 +82,7 @@ func TestExt_GlobalFlagsBeforeSubcommand(t *testing.T) {
 }
 
 func TestExt_GlobalFlagsEqualsFormBeforeSubcommand(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	r := e.RunArgs("--tmux-socket="+e.TmuxSocket(), "list")
 	var lr harness.ListResponse
@@ -92,6 +96,7 @@ func TestExt_GlobalFlagsEqualsFormBeforeSubcommand(t *testing.T) {
 // scrollback_text contains all available scrollback, unpadded, and
 // the response still succeeds.
 func TestExt_ScrollbackShorterThanRequested(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -114,6 +119,7 @@ func TestExt_ScrollbackShorterThanRequested(t *testing.T) {
 // §9.6 — match input has ANSI and CR stripped. The critical
 // regression case is `(?m)^marker$` against CRLF-terminated output.
 func TestExt_MatchInputStripsCRForMultilineAnchor(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -121,7 +127,7 @@ func TestExt_MatchInputStripsCRForMultilineAnchor(t *testing.T) {
 	// Emit a line terminated by \r\n. printf '%s\r\n' is the
 	// reliable way; echo behavior varies.
 	e.PaneOutput(t, pane, `printf 'c96-crlf-marker\r\n'`)
-	e.WaitForText(t, pane, "c96-crlf-marker", 2*time.Second)
+	e.WaitForText(t, pane, "c96-crlf-marker", 5*time.Second)
 
 	var w harness.WaitResponse
 	e.Run("wait",
@@ -142,6 +148,7 @@ func TestExt_MatchInputStripsCRForMultilineAnchor(t *testing.T) {
 // SIGKILLing bash's entire process group, and checking that we
 // can still reach the daemon afterward.
 func TestExt_DaemonSurvivesSpawnerKill(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
@@ -196,6 +203,7 @@ alive:
 // (socket placed under $XDG_RUNTIME_DIR/tpctl/); the fallback path
 // is hard to observe without reading implementation internals.
 func TestExt_DaemonSocketUnderXDG(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	// Trigger daemon auto-spawn via a cheap call.
 	e.List(t)
@@ -223,6 +231,7 @@ func TestExt_DaemonSocketUnderXDG(t *testing.T) {
 // (a) they all succeed,
 // (b) the socket exists and is dial-able after they return.
 func TestExt_ConcurrentSpawnRaceIsSerialized(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 
 	const n = 10
@@ -243,6 +252,7 @@ func TestExt_ConcurrentSpawnRaceIsSerialized(t *testing.T) {
 // mode). After kill-server, a follow-up tpctl call must surface
 // the tmux error on stderr with a nonzero exit.
 func TestExt_TmuxServerLossRaisesRuntimeError(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 
 	// Bring the daemon up, then kill tmux.
