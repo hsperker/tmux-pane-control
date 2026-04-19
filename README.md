@@ -199,6 +199,35 @@ tpctl daemon                                   # foreground daemon, for debuggin
 
 Output is one-line JSON. It composes with `jq`, `grep`, and pipes.
 
+## When to use tpctl
+
+| Your situation | Use |
+|---|---|
+| Agent or script drives a shell you also want to watch | **tpctl** |
+| Race-free waits on command output (sentinel, regex, idle) | **tpctl** |
+| Open N windows, run N commands, walk away | [libtmux](https://github.com/tmux-python/libtmux) |
+| Automate a CLI with no terminal, no tmux | [pexpect](https://pexpect.readthedocs.io/) / [node-pty](https://github.com/microsoft/node-pty) |
+| Throwaway one-liner in bash | `tmux send-keys` + `tmux capture-pane` |
+
+Reach for tpctl when:
+
+- You cannot miss output between a send and a read. `text` waits for
+  tmux to ack; `wait --after TOKEN` scans from the token forward,
+  including buffered bytes. Race-free within 1 MiB retained per pane.
+- Human and agent share the same pane in real time.
+- You want the wait modes done for you. Sentinel carries an exit
+  code. Regex is RE2. Quiescence fires when the pane goes idle.
+- You want JSON out and structured JSON errors with canonical codes.
+
+Reach for something else when:
+
+- You just need to set up panes — libtmux is a Python library for
+  that, not an observer of output.
+- You're automating a CLI with no terminal. pexpect and node-pty
+  run the child themselves; no tmux, no daemon, no visibility.
+- The script runs once and you'll read its stdout after.
+  `tmux send-keys` plus `tmux capture-pane` is fine.
+
 ## Architecture
 
 ```
