@@ -17,6 +17,7 @@ import (
 // see a different instance id and our snapshot-then-read token
 // reuse would fail with INVALID_AFTER.
 func TestC31_OneControllerPerTmuxServer(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -36,6 +37,7 @@ func TestC31_OneControllerPerTmuxServer(t *testing.T) {
 // the first Run implicitly spawns one. We assert there's no
 // explicit pre-flight the caller must perform.
 func TestC32_AutoSpawnOnDemand(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	// No explicit `tpctl daemon` call; just run list and expect
 	// success.
@@ -49,6 +51,7 @@ func TestC32_AutoSpawnOnDemand(t *testing.T) {
 // We can check the help text advertises it without actually
 // starting the daemon in the foreground (which would block).
 func TestC33_DaemonSubcommandExists(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	r := e.RunArgs("--help")
 	if r.Code != 0 {
@@ -62,6 +65,7 @@ func TestC33_DaemonSubcommandExists(t *testing.T) {
 // C34 — a pending wait whose pane is destroyed fails with
 // PANE_CLOSED, distinct from TIMEOUT and PANE_NOT_FOUND (§11.9).
 func TestC34_PaneClosedWhileWaitPending(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 
 	// Create a second pane so we can kill it without wrecking the
@@ -110,6 +114,10 @@ func TestC34_PaneClosedWhileWaitPending(t *testing.T) {
 //   - then kill it
 //   - then poll up to 5s for the PANE_NOT_FOUND to surface.
 func TestC35_DestroyedPaneSurfacesPaneNotFound(t *testing.T) {
+	// Deliberately NOT t.Parallel(): this scenario's detection
+	// latency depends on the controller's subscription polling
+	// tick, which is sensitive to CPU contention. Keep serial so
+	// a busy parallel batch can't starve the poll loop.
 	e := harness.NewEnv(t)
 
 	pane := e.NewPane(t)

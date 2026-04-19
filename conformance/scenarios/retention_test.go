@@ -23,13 +23,14 @@ import (
 // This test only verifies the "below budget keeps the token valid"
 // half; C11 covers the "above budget evicts" half.
 func TestC10_BelowBudgetKeepsTokenValid(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
 	snap := e.Snapshot(t, pane)
 	// Push a modest amount of output — well under the 1 MiB budget.
 	e.PaneOutput(t, pane, `head -c 1000 /dev/urandom | base64`)
-	e.WaitForText(t, pane, "==", 2*time.Second) // base64 tail padding
+	e.WaitForText(t, pane, "==", 5*time.Second) // base64 tail padding
 
 	// Reading with the pre-flood token must succeed; the budget
 	// was not exceeded.
@@ -42,6 +43,7 @@ func TestC10_BelowBudgetKeepsTokenValid(t *testing.T) {
 // with > 1 MiB + slack to force eviction regardless of exact
 // byte accounting.
 func TestC11_EvictionInvalidatesOldTokens(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 

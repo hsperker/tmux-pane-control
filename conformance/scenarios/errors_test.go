@@ -16,6 +16,7 @@ import (
 // C36 — command-level failures emit structured JSON on stdout with
 // a nonzero exit code (§7.2).
 func TestC36_CmdErrorsAreJSONOnStdoutNonzeroExit(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 
 	// A handful of known-bad invocations; each must fulfill the
@@ -53,6 +54,7 @@ func TestC36_CmdErrorsAreJSONOnStdoutNonzeroExit(t *testing.T) {
 // C37 — runtime or controller failures emit diagnostics on stderr
 // with a nonzero exit code (§7.3).
 func TestC37_RuntimeFailuresGoToStderr(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 
 	// Point list at a bogus tmux socket — there's no tmux server
@@ -72,6 +74,7 @@ func TestC37_RuntimeFailuresGoToStderr(t *testing.T) {
 // applicable (§7.5). We already exercise each of these in other
 // scenarios; here we assert them as a group for §17 traceability.
 func TestC38_CanonicalErrorCodes(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -109,6 +112,7 @@ func TestC38_CanonicalErrorCodes(t *testing.T) {
 // holds across the full surface we exercise elsewhere. This test
 // is a sanity pass for traceability.
 func TestC39_ArchitectureIsExternallyConsistent(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 

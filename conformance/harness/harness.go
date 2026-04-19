@@ -14,11 +14,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -38,6 +40,16 @@ var tmuxFlag = flag.String("tmux", "tmux",
 // call this (via requireBinary) to fail fast when unconfigured.
 func Binary() string { return *binaryFlag }
 
+// invocation captures one CLI call for failure-time diagnostics.
+type invocation struct {
+	when time.Time
+	args []string
+	code int
+	// stdout/stderr are truncated to avoid wall-of-text dumps.
+	stdout string
+	stderr string
+}
+
 // Env is one conformance scenario's world: a fresh tmux server on a
 // disposable socket, a dedicated XDG_RUNTIME_DIR so the daemon's
 // socket is isolated, and the binary under test. Cleanup is
@@ -48,11 +60,22 @@ type Env struct {
 	tmux    string
 	tmuxSoc string
 	xdgDir  string
+
+	// Safe for t.Parallel(): mu guards the scenario-local state
+	// that tests may touch from goroutines (concurrent waits, etc).
+	mu       sync.Mutex
+	history  []invocation // bounded — last ~32 invocations
+	panes    []string     // panes we've explicitly tracked via NewPane
 }
 
 // NewEnv provisions a scenario-local environment. It skips the test
 // if --binary is unset or tmux is unavailable, so the suite degrades
 // gracefully on machines missing prerequisites.
+//
+// NewEnv does NOT set XDG_RUNTIME_DIR in the test process env — it
+// only forwards the value into subprocesses — so scenarios calling
+// NewEnv may call t.Parallel() freely. (t.Setenv is incompatible
+// with t.Parallel().)
 func NewEnv(t *testing.T) *Env {
 	t.Helper()
 	if *binaryFlag == "" {
@@ -66,11 +89,17 @@ func NewEnv(t *testing.T) *Env {
 	}
 
 	xdg := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", xdg)
 
 	soc := filepath.Join(t.TempDir(), "tmux.sock")
+	// Explicit `bash -i` ensures an interactive shell that
+	// produces a prompt and processes typed commands. Without
+	// this, some environments (including tmux over gVisor/runsc)
+	// start bash in a non-interactive mode where typed commands
+	// never execute — scenarios that drive the shell via
+	// send-keys then hang waiting for output.
 	cmd := exec.Command(*tmuxFlag, "-S", soc, "-f", "/dev/null",
-		"new-session", "-d", "-s", "t", "-x", "80", "-y", "24")
+		"new-session", "-d", "-s", "t", "-x", "80", "-y", "24",
+		"bash", "-i")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("tmux new-session: %v: %s", err, out)
 	}
@@ -87,14 +116,135 @@ func NewEnv(t *testing.T) *Env {
 }
 
 func (e *Env) teardown() {
-	// Ask the daemon to shut down gracefully if it exists; ignore
-	// errors. Then tear down tmux. The XDG temp dir is cleaned by
-	// t.Cleanup of TempDir.
+	// If the test failed, dump collected diagnostics BEFORE we
+	// kill tmux — otherwise capture-pane returns nothing useful.
+	if e.t.Failed() {
+		e.dumpDiagnostics()
+	}
+	// Kill the tmux server; any daemon will notice and exit via
+	// the §11.9 path.
 	_ = exec.Command(e.tmux, "-S", e.tmuxSoc, "kill-server").Run()
-	// Give any daemon a beat to notice and exit on its own via the
-	// §11.9 path; if not, orphaned daemons die with the XDG dir
-	// cleanup since their socket lives there.
-	time.Sleep(50 * time.Millisecond)
+
+	// Poll for daemon exit up to 3s. Detection threshold in
+	// real implementations is ~600ms (3 × 200ms poll); we budget
+	// well above that to tolerate parallel-run subprocess
+	// scheduling lag. Once the socket is no longer dial-able,
+	// the daemon is gone.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if pids := e.findLeakedDaemons(); len(pids) == 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Still alive after 3s — log as a warning; don't fail here
+	// because the scenario may have a more specific assertion to
+	// report, and TestMain does the suite-level zombie check.
+	if pids := e.findLeakedDaemons(); len(pids) > 0 {
+		e.t.Logf("conformance: tpctl daemon still bound to %s after 3s", e.xdgDir)
+	}
+}
+
+// dumpDiagnostics writes a failure context summary to the test log:
+// the last few CLI invocations plus tmux's capture-pane for every
+// tracked pane. Called only when the scenario has already failed,
+// so the cost is paid only for red tests.
+func (e *Env) dumpDiagnostics() {
+	e.mu.Lock()
+	hist := append([]invocation(nil), e.history...)
+	panes := append([]string(nil), e.panes...)
+	e.mu.Unlock()
+
+	var b strings.Builder
+	b.WriteString("\n──── conformance failure-time diagnostics ────\n")
+
+	// Recent invocations — most recent last.
+	n := len(hist)
+	start := 0
+	if n > 6 {
+		start = n - 6
+	}
+	if n > 0 {
+		fmt.Fprintf(&b, "Last %d tpctl invocation(s):\n", n-start)
+		for i := start; i < n; i++ {
+			inv := hist[i]
+			fmt.Fprintf(&b, "  [%s] tpctl %s → code=%d\n",
+				inv.when.Format("15:04:05.000"),
+				strings.Join(inv.args, " "),
+				inv.code,
+			)
+			if s := truncate(inv.stdout, 200); s != "" {
+				fmt.Fprintf(&b, "    stdout: %s\n", s)
+			}
+			if s := truncate(inv.stderr, 200); s != "" {
+				fmt.Fprintf(&b, "    stderr: %s\n", s)
+			}
+		}
+	}
+
+	// Pane state at failure time.
+	if len(panes) > 0 {
+		b.WriteString("Pane captures (tmux capture-pane -p):\n")
+		for _, p := range panes {
+			out, err := exec.Command(e.tmux, "-S", e.tmuxSoc,
+				"capture-pane", "-p", "-t", p).CombinedOutput()
+			if err != nil {
+				fmt.Fprintf(&b, "  %s: <unavailable: %v>\n", p, err)
+				continue
+			}
+			fmt.Fprintf(&b, "  %s:\n%s", p, indent(string(out), "    "))
+		}
+	}
+
+	b.WriteString("──── end diagnostics ────")
+	e.t.Log(b.String())
+}
+
+// findLeakedDaemons returns pids of any tpctl daemon process still
+// bound to this env's daemon socket directory.
+func (e *Env) findLeakedDaemons() []int {
+	// Cheap probe: does the socket dir still contain a .sock that
+	// something is listening on? If so, some daemon is still alive.
+	// We avoid a /proc walk to keep this portable across Linux/Mac.
+	sockDir := filepath.Join(e.xdgDir, "tpctl")
+	entries, err := os.ReadDir(sockDir)
+	if err != nil {
+		return nil
+	}
+	var leaked []int
+	for _, ent := range entries {
+		if !strings.HasSuffix(ent.Name(), ".sock") {
+			continue
+		}
+		// Try to dial — if the connection is accepted, a daemon
+		// is still bound. pid=0 means "unknown pid, just alive".
+		full := filepath.Join(sockDir, ent.Name())
+		c, err := net.DialTimeout("unix", full, 50*time.Millisecond)
+		if err == nil {
+			c.Close()
+			leaked = append(leaked, 0)
+		}
+	}
+	return leaked
+}
+
+func truncate(s string, n int) string {
+	s = strings.TrimRight(s, "\n")
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func indent(s, prefix string) string {
+	if s == "" {
+		return prefix + "<empty>\n"
+	}
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i, l := range lines {
+		lines[i] = prefix + l
+	}
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // TmuxSocket exposes the fixture socket so scenarios can drive tmux
@@ -144,6 +294,7 @@ func (e *Env) RunArgs(args ...string) Result {
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	started := time.Now()
 	err := cmd.Run()
 	code := 0
 	if ee := (&exec.ExitError{}); errors.As(err, &ee) {
@@ -151,7 +302,25 @@ func (e *Env) RunArgs(args ...string) Result {
 	} else if err != nil {
 		e.t.Fatalf("exec %s %v: %v", e.bin, args, err)
 	}
-	return Result{Code: code, Stdout: stdout.String(), Stderr: stderr.String()}
+	r := Result{Code: code, Stdout: stdout.String(), Stderr: stderr.String()}
+
+	// Record the invocation for failure-time diagnostics. Keep a
+	// bounded window so history doesn't grow without limit in
+	// long-running scenarios (tail loops, concurrency tests).
+	e.mu.Lock()
+	e.history = append(e.history, invocation{
+		when:   started,
+		args:   append([]string(nil), args...),
+		code:   code,
+		stdout: r.Stdout,
+		stderr: r.Stderr,
+	})
+	if len(e.history) > 32 {
+		e.history = e.history[len(e.history)-32:]
+	}
+	e.mu.Unlock()
+
+	return r
 }
 
 // Run invokes the binary with the fixture's --tmux-socket injected
@@ -272,19 +441,33 @@ func (e *Env) List(t *testing.T) []string {
 }
 
 // FirstPane returns the first pane id on the fixture tmux server,
-// failing the test if none exist.
+// failing the test if none exist. The returned pane is tracked so
+// failure-time diagnostics can capture its state.
 func (e *Env) FirstPane(t *testing.T) string {
 	t.Helper()
 	panes := e.List(t)
 	if len(panes) == 0 {
 		t.Fatal("no panes in fixture tmux server")
 	}
+	e.mu.Lock()
+	seen := false
+	for _, p := range e.panes {
+		if p == panes[0] {
+			seen = true
+			break
+		}
+	}
+	if !seen {
+		e.panes = append(e.panes, panes[0])
+	}
+	e.mu.Unlock()
 	return panes[0]
 }
 
 // NewPane opens a new window in the fixture tmux server and returns
 // the new pane's id. Scenarios that need multiple or disposable
-// panes use this.
+// panes use this. The pane is tracked so failure-time diagnostics
+// can capture its state.
 func (e *Env) NewPane(t *testing.T) string {
 	t.Helper()
 	// `new-window` returns the new pane id if we ask for it.
@@ -292,6 +475,9 @@ func (e *Env) NewPane(t *testing.T) string {
 	if !strings.HasPrefix(out, "%") {
 		t.Fatalf("unexpected new-window output: %q", out)
 	}
+	e.mu.Lock()
+	e.panes = append(e.panes, out)
+	e.mu.Unlock()
 	return out
 }
 

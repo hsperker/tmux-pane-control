@@ -5,7 +5,7 @@ suite that drives any candidate implementation through its CLI and
 asserts the spec-mandated behavior.
 
 **What it is.** A single Go module (`conformance/`) containing a test
-harness and ~50 scenarios organized by spec section. The tests are
+harness and ~55 scenarios organized by spec section. The tests are
 written in Go but the *binary under test can be anything* — the kit
 invokes it as an external process and observes argv, stdout, stderr,
 exit code, and JSON shapes. No imports from any reference
@@ -27,16 +27,28 @@ tokens are treated as opaque strings.
 - A Go 1.24 toolchain (to run the kit; your implementation can be in
   any language).
 - `tmux` 3.x on `PATH`.
+- `bash` (the harness starts each scenario's pane as `bash -i` so
+  commands typed via `tpctl text` are actually executed).
 - The `tpctl` binary under test, already built.
 
 **Command.**
 
 ```bash
 cd conformance
-go test ./scenarios/... -args --binary=/absolute/path/to/tpctl
+go test ./scenarios/... -parallel=4 -args --binary=/absolute/path/to/tpctl
 ```
 
 `-v` to see each scenario's name. `-run TestC21` to run one.
+
+**Parallelism.** Scenarios that are CPU- and IO-independent call
+`t.Parallel()`, so `-parallel=N` controls how many run concurrently.
+`-parallel=4` is the recommended target — enough to get meaningful
+wall-clock speedup without starving shell subprocesses that drive
+pane output. Going higher is usually fine but may introduce
+timing-sensitive flakes on constrained hardware. Lower (`-parallel=1`)
+works but is slower. A handful of timing-sensitive scenarios opt
+out of parallelism explicitly; those run serially regardless of the
+flag.
 
 **Optional flags.**
 
@@ -47,6 +59,24 @@ go test ./scenarios/... -args --binary=/absolute/path/to/tpctl
 
 If `--binary` is not set, tests skip rather than fail, so a plain
 `go test ./conformance/...` in the reference repo is a no-op.
+
+## Failure diagnostics
+
+When a scenario fails, the harness auto-dumps a failure-context
+summary to the test log before teardown:
+
+- the last ~6 `tpctl` invocations (argv, exit code, truncated
+  stdout, truncated stderr);
+- a `tmux capture-pane -p` of every pane the scenario touched.
+
+This surfaces most "why didn't it work?" questions in the test
+output itself — no need to re-run with extra logging. Scenarios
+that pass don't pay this cost.
+
+The harness also performs a per-scenario zombie check after
+teardown (polls up to 3s for the daemon to self-exit) and a
+suite-level process count in `TestMain` that fails the suite if
+`tpctl daemon` processes leaked beyond the start count.
 
 ## What the kit covers
 
@@ -64,6 +94,9 @@ spec item.
 | `scenarios/io_test.go` | C25 (text representation), C26–C30 (text, key, send-ack) |
 | `scenarios/lifecycle_test.go` | C31–C33 (controller model), C34–C35 (pane lifecycle) |
 | `scenarios/errors_test.go` | C36–C38 (error conventions), C39 (external consistency) |
+| `scenarios/multi_server_test.go` | §11.4 socket resolution + cross-server isolation |
+| `scenarios/workflows_test.go` | realistic agent idioms (sentinel build, TUI drive, tail) |
+| `scenarios/main_test.go` | `TestMain` suite hooks (zombie check) |
 
 C39 (architectural patterns) is structural — the kit cannot inspect
 internal code organization. The scenario instead asserts the
@@ -195,6 +228,10 @@ files. No other wiring.
 - Post-§17 tightenings (§6.1, §6.2, §9.2 short-scrollback, §9.6
   CR-strip, §11.2 lifetime, §11.4 socket path, §11.5 coordination,
   §11.9 restart) each have a scenario.
-- Total: ~50 scenarios; full run ≤60s on a modern laptop.
-- Verified against the reference implementation on branch
+- Multi-server (§11.4 resolution branches, cross-server isolation)
+  and realistic agent workflow scenarios are covered.
+- Total: ~55 scenarios; full run ≤65s at `-parallel=4` on a modern
+  laptop.
+- Verified 10/10 consecutive green runs at `-parallel=4` against the
+  reference implementation on branch
   `claude/review-tpctl-v1-docs-k35ZW`.

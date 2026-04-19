@@ -20,6 +20,7 @@ import (
 // trailing blank line; the resulting snapshot/read fields must be
 // clean.
 func TestC25_TextNormalization(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -29,7 +30,7 @@ func TestC25_TextNormalization(t *testing.T) {
 	// a second line, then a trailing blank line. bash printf is
 	// used so the ANSI escapes are literal.
 	e.PaneOutput(t, pane, `printf '\033[31mhello\033[0m   \r\nworld\r\n\r\n'`)
-	e.WaitForText(t, pane, "world", 2*time.Second)
+	e.WaitForText(t, pane, "world", 5*time.Second)
 
 	var r harness.ReadResponse
 	e.Run("read", "--pane", pane, "--after", snap.Next).MustJSON(t, &r)
@@ -62,6 +63,7 @@ func TestC25_TextNormalization(t *testing.T) {
 // send command (§9.4, §9.5). Observable consequence: after text
 // returns, a subsequent read --after must see the echoed output.
 func TestC26_TextReturnsAfterTmuxAck(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -86,6 +88,7 @@ func TestC26_TextReturnsAfterTmuxAck(t *testing.T) {
 
 // C27 — text and key emit no success payload (§9.4, §9.5).
 func TestC27_TextKeyEmitNoSuccessPayload(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -97,6 +100,7 @@ func TestC27_TextKeyEmitNoSuccessPayload(t *testing.T) {
 // covered by MustMuted in C27; kept as a named scenario for §17
 // traceability.
 func TestC28_TextKeyProduceNoStdoutOnSuccess(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -119,6 +123,7 @@ func TestC28_TextKeyProduceNoStdoutOnSuccess(t *testing.T) {
 // failure is well-formed JSON; if tmux accepts, the call succeeds.
 // Either is acceptable per the softened acceptance criterion.
 func TestC29_KeyRejectionSurfacesStructuredError(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -137,6 +142,7 @@ func TestC29_KeyRejectionSurfacesStructuredError(t *testing.T) {
 // that passing a `;` plus a plausible tmux command name does not
 // execute that command on the tmux server.
 func TestC30_KeyTokensAreDataNotCommandSyntax(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 

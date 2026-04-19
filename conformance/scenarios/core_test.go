@@ -14,6 +14,7 @@ import (
 
 // C01 — list returns only %pane_id strings (§9.1).
 func TestC01_ListReturnsPaneIDsOnly(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	panes := e.List(t)
 	if len(panes) == 0 {
@@ -30,6 +31,7 @@ func TestC01_ListReturnsPaneIDsOnly(t *testing.T) {
 // (§9.2). "Usable" is exercised by C05, but we at least check the
 // token is a non-empty string here.
 func TestC02_SnapshotReturnsTextAndToken(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	snap := e.Snapshot(t, e.FirstPane(t))
 	if snap.Next == "" {
@@ -46,12 +48,13 @@ func TestC02_SnapshotReturnsTextAndToken(t *testing.T) {
 // C03 — snapshot --history-lines returns scrollback_text AND text
 // as distinct fields (§9.2).
 func TestC03_SnapshotHistoryFieldsAreDistinct(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
 	// Pollute the scrollback with a predictable marker.
 	e.PaneOutput(t, pane, "echo c03-scrollback-marker")
-	e.WaitForText(t, pane, "c03-scrollback-marker", 2*time.Second)
+	e.WaitForText(t, pane, "c03-scrollback-marker", 5*time.Second)
 	// Push the marker above the visible rows so it lives in scrollback.
 	for i := 0; i < 30; i++ {
 		e.PaneOutput(t, pane, "")
@@ -73,11 +76,12 @@ func TestC03_SnapshotHistoryFieldsAreDistinct(t *testing.T) {
 // weakly: the returned text must line up with tmux's own
 // capture-pane output (both are row-based).
 func TestC04_SnapshotTextIsRenderedRows(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
 	e.PaneOutput(t, pane, "echo c04-visible-marker")
-	e.WaitForText(t, pane, "c04-visible-marker", 2*time.Second)
+	e.WaitForText(t, pane, "c04-visible-marker", 5*time.Second)
 
 	snap := e.Snapshot(t, pane)
 	if !strings.Contains(snap.Text, "c04-visible-marker") {
@@ -104,6 +108,7 @@ func TestC04_SnapshotTextIsRenderedRows(t *testing.T) {
 // output from a lowercase-only command string, guaranteeing the
 // uppercase token only appears once in the stream.
 func TestC05_ReadAfterNeverReReadsPreTokenOutput(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -122,7 +127,7 @@ func TestC05_ReadAfterNeverReReadsPreTokenOutput(t *testing.T) {
 	// Emit post-marker with the same technique and read from the
 	// pre-wait's next anchor.
 	e.PaneOutput(t, pane, `echo post-c05 | tr a-z A-Z`)
-	e.WaitForText(t, pane, "POST-C05", 2*time.Second)
+	e.WaitForText(t, pane, "POST-C05", 5*time.Second)
 
 	var r harness.ReadResponse
 	e.Run("read", "--pane", pane, "--after", preWait.Next).MustJSON(t, &r)
@@ -137,6 +142,7 @@ func TestC05_ReadAfterNeverReReadsPreTokenOutput(t *testing.T) {
 
 // C06 — read may return empty text and still succeed (§9.3).
 func TestC06_ReadEmptyTextIsSuccess(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 
@@ -161,6 +167,7 @@ func TestC06_ReadEmptyTextIsSuccess(t *testing.T) {
 // known to the controller; otherwise §7.5 precedence would surface
 // the wrong-pane token as PANE_NOT_FOUND.
 func TestC07_TokensArePaneScoped(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	a := e.FirstPane(t)
 	b := e.NewPane(t)
@@ -176,6 +183,7 @@ func TestC07_TokensArePaneScoped(t *testing.T) {
 // We snapshot first so the pane is known to the controller;
 // otherwise §7.5 precedence would surface this as PANE_NOT_FOUND.
 func TestC08_ReadInvalidAfterOnMalformedToken(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	_ = e.Snapshot(t, pane)
@@ -187,6 +195,7 @@ func TestC08_ReadInvalidAfterOnMalformedToken(t *testing.T) {
 // conditions (§9.6). Snapshot first for the same §7.5-precedence
 // reason as C08.
 func TestC09_WaitInvalidAfterOnMalformedToken(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	_ = e.Snapshot(t, pane)

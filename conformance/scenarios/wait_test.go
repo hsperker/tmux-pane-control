@@ -7,6 +7,7 @@ package scenarios
 
 import (
 	"encoding/json"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ import (
 
 // C12 — wait requires --timeout-ms (§9.6).
 func TestC12_WaitRequiresTimeoutMs(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -35,6 +37,7 @@ func TestC12_WaitRequiresTimeoutMs(t *testing.T) {
 // C13 — wait supports exactly sentinel, regex, quiescence (§9.6).
 // An unknown mode must be rejected before execution.
 func TestC13_WaitSupportsExactlyThreeModes(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -60,13 +63,14 @@ func TestC13_WaitSupportsExactlyThreeModes(t *testing.T) {
 // output at registration time, not just future arrivals (§9.6).
 // This is the race-free guarantee.
 func TestC14_WaitSeesAlreadyBufferedOutput(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
 
 	// Output arrives BEFORE wait is registered.
 	e.PaneOutput(t, pane, "echo c14-already-buffered-marker")
-	e.WaitForText(t, pane, "c14-already-buffered-marker", 2*time.Second)
+	e.WaitForText(t, pane, "c14-already-buffered-marker", 5*time.Second)
 	// Give pipe-pane / subscription a beat to deliver it to the
 	// controller's buffer.
 	time.Sleep(300 * time.Millisecond)
@@ -90,6 +94,7 @@ func TestC14_WaitSeesAlreadyBufferedOutput(t *testing.T) {
 // then send immediately; the wait must catch the output whether
 // it arrived before or after registration.
 func TestC15_WaitCannotMissFastOutput(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -123,6 +128,7 @@ func TestC15_WaitCannotMissFastOutput(t *testing.T) {
 
 // C16 — wait always returns next on success (§9.6).
 func TestC16_WaitSuccessIncludesNext(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -143,6 +149,7 @@ func TestC16_WaitSuccessIncludesNext(t *testing.T) {
 // C17 — multiple concurrent waits on the same pane are allowed
 // and evaluated independently (§9.6).
 func TestC17_MultipleConcurrentWaits(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -202,6 +209,7 @@ func TestC17_MultipleConcurrentWaits(t *testing.T) {
 // backreferences; a pattern with `\1` must be rejected at compile
 // time before any timeout elapses.
 func TestC18_RegexUsesRE2(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -226,6 +234,7 @@ func TestC18_RegexUsesRE2(t *testing.T) {
 // \n-normalized post-checkpoint text (§9.6). We probe by emitting
 // colored output and requiring a plain-text regex to match.
 func TestC19_MatchInputIsANSIStripped(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -233,7 +242,7 @@ func TestC19_MatchInputIsANSIStripped(t *testing.T) {
 	// Colored "READY" (red foreground, reset). tmux passes the
 	// literal ANSI through because the shell's echo -e writes it.
 	e.PaneOutput(t, pane, `printf '\033[31mREADY-C19\033[0m\n'`)
-	e.WaitForText(t, pane, "READY-C19", 2*time.Second)
+	e.WaitForText(t, pane, "READY-C19", 5*time.Second)
 
 	// (?m) so ^/$ anchor per-line; the pane buffer also contains
 	// the shell prompt around our line, so a full-string anchor
@@ -254,12 +263,13 @@ func TestC19_MatchInputIsANSIStripped(t *testing.T) {
 // C20 — no implicit anchoring (§9.6). A pattern matches anywhere
 // in the post-checkpoint buffer.
 func TestC20_NoImplicitAnchoring(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
 
 	e.PaneOutput(t, pane, "echo prefix-NEEDLE-C20-suffix")
-	e.WaitForText(t, pane, "NEEDLE-C20", 2*time.Second)
+	e.WaitForText(t, pane, "NEEDLE-C20", 5*time.Second)
 
 	var w harness.WaitResponse
 	e.Run("wait",
@@ -278,6 +288,7 @@ func TestC20_NoImplicitAnchoring(t *testing.T) {
 // (§9.6). C22 — the response includes the full matched literal
 // AND exit_code as an integer. Tested together.
 func TestC21_22_SentinelMatchesAndParsesExitCode(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
@@ -308,34 +319,48 @@ func TestC21_22_SentinelMatchesAndParsesExitCode(t *testing.T) {
 // C23 — wait --for quiescence treats any appended byte after the
 // checkpoint as activity (§9.6).
 //
-// We drive continuous activity from WITHIN the shell so pipe-pane
-// stays saturated and the controller's stream sees a steady drip
-// of bytes. The background loop emits a line every ~50ms for up to
-// 5s — well under the 500ms quiet window at any point during the
-// 2s wait, so quiescence must time out, not succeed.
+// Drive activity from Go via tmux send-keys (one keystroke at
+// regular intervals) rather than from within the shell. This
+// sidesteps shell-subprocess scheduling jitter that otherwise
+// produced false "idle" gaps under parallel test load — each
+// single-char send-keys is an argv-level tmux call, much more
+// predictable than a backgrounded bash loop.
 func TestC23_QuiescenceCountsAnyAppendAsActivity(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
-
-	// Start a backgrounded emitter; ensure it's running before we
-	// snapshot, so pipe-pane has bytes flowing when the wait
-	// registers.
-	e.PaneOutput(t, pane,
-		`for i in $(seq 1 100); do echo noise-c23-$i; sleep 0.05; done &`)
-	e.WaitForText(t, pane, "noise-c23-1", 2*time.Second)
-	t.Cleanup(func() { e.PaneOutput(t, pane, "kill %1 2>/dev/null") })
-
-	// Give pipe-pane a moment to relay the first chunk of output
-	// into the controller's stream so T_last is fresh.
-	time.Sleep(300 * time.Millisecond)
-
 	snap := e.Snapshot(t, pane)
+
+	// Drive activity every 50ms for longer than the wait timeout.
+	// Each keystroke triggers TTY echo → pipe-pane → store.Append.
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				// Single char, no Enter — tmux types a key.
+				_ = exec.Command("tmux", "-S", e.TmuxSocket(),
+					"send-keys", "-t", pane, "x").Run()
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+
+	// Give the driver a beat to start hitting pipe-pane.
+	time.Sleep(200 * time.Millisecond)
+
 	r := e.Run("wait",
 		"--pane", pane,
 		"--after", snap.Next,
 		"--for", "quiescence",
 		"--ms", "500",
-		"--timeout-ms", "2000",
+		"--timeout-ms", "1800",
 	)
 	if r.Code == 0 {
 		t.Fatalf("quiescence succeeded despite continuous activity: stdout=%q", r.Stdout)
@@ -348,14 +373,22 @@ func TestC23_QuiescenceCountsAnyAppendAsActivity(t *testing.T) {
 
 // C24 — quiescence may succeed immediately if already satisfied
 // at registration time (§9.6).
+//
+// To separate "immediate" from "waits for the quiet window" in a
+// way that's robust under parallel subprocess contention, we pick
+// a quiet window (--ms 2000) large enough that an implementation
+// that incorrectly waits the full window would be unambiguously
+// slower than one that returns immediately. Pre-sleep for >--ms so
+// the "already satisfied" precondition holds.
 func TestC24_QuiescenceImmediatelyWhenIdle(t *testing.T) {
+	t.Parallel()
 	e := harness.NewEnv(t)
 	pane := e.FirstPane(t)
 	snap := e.Snapshot(t, pane)
 
-	// Give the pane a moment to settle so the mint time is older
-	// than the quiet window.
-	time.Sleep(200 * time.Millisecond)
+	// Pre-sleep longer than the quiet window so the pane has been
+	// idle for > --ms by the time the wait is registered.
+	time.Sleep(2100 * time.Millisecond)
 
 	start := time.Now()
 	var w harness.WaitResponse
@@ -363,19 +396,20 @@ func TestC24_QuiescenceImmediatelyWhenIdle(t *testing.T) {
 		"--pane", pane,
 		"--after", snap.Next,
 		"--for", "quiescence",
-		"--ms", "100",
-		"--timeout-ms", "2000",
+		"--ms", "2000",
+		"--timeout-ms", "6000",
 	).MustJSON(t, &w)
 	elapsed := time.Since(start)
 
 	if w.Result != "quiescence" {
 		t.Fatalf("result = %q", w.Result)
 	}
-	// "Immediately" is implementation-dependent but must be well
-	// under the quiet window. 200ms is a generous budget for
-	// subprocess startup + IPC.
-	if elapsed > 200*time.Millisecond {
-		t.Fatalf("quiescence took %v; expected nearly immediate", elapsed)
+	// An "immediate" implementation returns well under the
+	// 2000ms quiet window. We allow up to 1500ms for subprocess
+	// startup + IPC under parallel load; beyond that the impl
+	// is clearly waiting for the window to elapse.
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("quiescence took %v; expected nearly immediate (< 1.5s)", elapsed)
 	}
 	if w.Matched != nil {
 		t.Fatalf("quiescence must not return matched; got %q", *w.Matched)
