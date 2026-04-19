@@ -26,6 +26,11 @@ checkpoint, so there is no "read from now" race.
   `INVALID_AFTER`, `TIMEOUT`, `PANE_CLOSED`, `MISSING_AFTER`).
 - **No daemon babysitting.** The controller auto-spawns on first use
   and survives the spawning CLI (setsid + stdio detachment).
+- **Language-agnostic conformance suite.** `conformance/` is a
+  standalone Go module that drives any tpctl-compatible binary
+  (written in any language) through ~55 spec-pinned scenarios
+  covering every §17 acceptance criterion plus post-§17 tightenings.
+  Point it at your binary: `go test ./conformance/scenarios/ -parallel=4 -args --binary=/path/to/tpctl`.
 
 ## Install
 
@@ -236,9 +241,6 @@ tpctl daemon
 The JSON output is compact and line-oriented, so it plays well with
 `jq`, `grep`, and shell pipelines.
 
-The JSON output is compact and line-oriented, so it plays well with
-`jq`, `grep`, and shell pipelines.
-
 ## Architecture at a glance
 
 ```
@@ -251,6 +253,7 @@ internal/waiter/       sentinel / regex / quiescence matchers (pure)
 internal/textnorm/     §8.3 ANSI/CR/whitespace normalization (pure)
 internal/tmuxctl/      tmux adapter (pipe-pane + list-panes poll)
 internal/domain/       response types, error codes, canonical JSON shapes
+conformance/           standalone conformance kit (own go.mod, stdlib-only)
 ```
 
 One controller per tmux server, keyed on the resolved tmux socket
@@ -264,14 +267,21 @@ diagrams of the component layout, request lifecycle, the race-free
 ## Building and testing
 
 ```bash
-go test ./...                              # all tests
+go test ./...                              # all tests (impl only)
 go test ./internal/textnorm/...            # fast unit tests
 go test ./cmd/tpctl/ -run TestAcceptance   # §17 acceptance suite
+
+# Conformance kit (lives in its own Go module):
+go build -o tpctl ./cmd/tpctl
+cd conformance && go test ./scenarios/ -parallel=4 -args --binary=$PWD/../tpctl
 ```
 
 Tests that need tmux skip themselves if tmux is not on `PATH`. The
 acceptance suite spins up a disposable tmux server on a temp
-socket and drives the built binary through the daemon.
+socket and drives the built binary through the daemon. The
+conformance kit does the same but is cleanly separated from any
+specific implementation — point it at any tpctl-compatible
+binary, in any language.
 
 ## Documentation
 
@@ -284,6 +294,11 @@ socket and drives the built binary through the daemon.
   — the slice-by-slice plan that was used to build v1, plus a
   retrospective and the list of known deviations the code is still
   catching up on.
+- [`conformance/README.md`](conformance/README.md) — the
+  language-agnostic conformance kit: how an alternative
+  implementer (Go, Rust, Python, anything) runs it against their
+  binary, which spec sections are covered, and how to extend it
+  with new scenarios.
 
 ## License
 
