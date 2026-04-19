@@ -1,36 +1,30 @@
 # tmux-pane-control
 
-`tpctl` is a small CLI that lets coding agents and humans interact
-with tmux panes programmatically, without the race conditions that
-plague `send-keys` + `capture-pane` scripts.
+`tpctl` drives tmux panes from scripts and agents without the usual
+`send-keys` + `capture-pane` races.
 
-A short-lived CLI frontend talks to an auto-spawned controller
-process that owns tmux state, per-pane output-stream buffers, and
-opaque checkpoint tokens. Every observation is anchored to a
-checkpoint, so there is no "read from now" race.
+The CLI is short-lived. It talks to a daemon that owns tmux state,
+per-pane ring buffers, and opaque checkpoint tokens. Every read and
+every wait is anchored to a token. There is no "read from now."
 
 ## What it gives you
 
-- **Checkpointed reads.** `snapshot` returns the visible pane plus a
-  token; `read --after TOKEN` returns everything appended since,
-  exactly once.
+- **Checkpointed reads.** `snapshot` returns the visible screen and a
+  token. `read --after TOKEN` returns what came next, exactly once.
 - **Race-free waits.** `wait --for sentinel|regex|quiescence` scans
-  from a checkpoint, including output that arrived between the send
-  and the wait registration. Multiple concurrent waits on the same
-  pane are supported.
-- **Send-ack semantics.** `text` and `key` return only after tmux has
-  acknowledged the send.
-- **Compact JSON.** Query commands print one-line JSON on stdout.
-  Mutating commands print nothing. Command-level errors print
-  structured JSON with canonical codes (`PANE_NOT_FOUND`,
-  `INVALID_AFTER`, `TIMEOUT`, `PANE_CLOSED`, `MISSING_AFTER`).
-- **No daemon babysitting.** The controller auto-spawns on first use
-  and survives the spawning CLI (setsid + stdio detachment).
-- **Language-agnostic conformance suite.** `conformance/` is a
-  standalone Go module that drives any tpctl-compatible binary
-  (written in any language) through ~55 spec-pinned scenarios
-  covering every §17 acceptance criterion plus post-§17 tightenings.
-  Point it at your binary: `go test ./conformance/scenarios/ -parallel=4 -args --binary=/path/to/tpctl`.
+  from the token forward, including output buffered before the wait
+  registered. Concurrent waits on the same pane are fine.
+- **Send-ack.** `text` and `key` return only after tmux ack's the send.
+- **Compact JSON.** Query commands print one JSON line on stdout.
+  Mutating commands print nothing. Errors are JSON too, with canonical
+  codes: `PANE_NOT_FOUND`, `INVALID_AFTER`, `TIMEOUT`, `PANE_CLOSED`,
+  `MISSING_AFTER`.
+- **No daemon babysitting.** The daemon spawns on first use and
+  outlives the CLI that spawned it.
+- **Conformance kit.** `conformance/` is a standalone Go module with
+  ~55 spec-pinned scenarios. Point it at any tpctl-compatible binary
+  in any language:
+  `go test ./conformance/scenarios/ -parallel=4 -args --binary=/path/to/tpctl`.
 
 ## Install
 
@@ -43,19 +37,18 @@ Requires Go 1.24+ and tmux 3.x.
 
 ## Core concepts
 
-- **Pane identity.** Panes are named by tmux's `%N` id (e.g. `%42`),
-  never `session:window.pane`. Use `tpctl list` to discover ids.
-- **Checkpoint token.** An opaque string returned by `snapshot`,
-  `read`, and `wait`. Pass it back via `--after` to anchor the next
-  observation. Tokens are pane-scoped and controller-lifetime-
-  scoped; don't try to parse them or reuse them across panes.
+- **Pane identity.** Panes are tmux `%N` ids, e.g. `%42`. Not
+  `session:window.pane`. Use `tpctl list` to discover them.
+- **Checkpoint token.** An opaque string from `snapshot`, `read`, or
+  `wait`. Pass it back via `--after`. Tokens are pane-scoped and die
+  with the controller. Do not parse them.
 - **Wait modes.**
-  - `sentinel` — matches `__DONE__:TOKEN:EXITCODE`; response parses
+  - `sentinel` matches `__DONE__:TOKEN:EXITCODE`. The response parses
     the exit code as an integer.
-  - `regex` — RE2, applied to the ANSI-and-CR-stripped post-
-    checkpoint buffer. No submatches.
-  - `quiescence` — succeeds once the pane has been idle (no output)
-    for `--ms` milliseconds. Succeeds immediately if already idle.
+  - `regex` is RE2, applied to ANSI-and-CR-stripped output. No
+    submatches.
+  - `quiescence` fires once the pane has been idle for `--ms`
+    milliseconds. Fires immediately if it already was.
 
 ## Commands at a glance
 
@@ -69,87 +62,67 @@ Requires Go 1.24+ and tmux 3.x.
 | `tpctl wait --pane %N --after TOKEN --for MODE ... --timeout-ms T` | `pane_id`, `next`, `result`, mode-specific fields |
 | `tpctl daemon` | runs the controller in the foreground |
 
-Targeting a specific tmux server: `--tmux-socket PATH` or
+Target a specific tmux server with `--tmux-socket PATH` or
 `--tmux-socket-name NAME` on any invocation.
 
 ## Agent usage
 
-Every command in the API gets exercised in an end-to-end session.
-
-### 1. Discover panes (`list`)
+### 1. Discover panes
 
 ```bash
 tpctl list
 # {"panes":["%0","%42","%43"]}
-
 PANE=$(tpctl list | jq -r '.panes[0]')
 ```
 
-### 2. Bootstrap observation (`snapshot`)
+### 2. Snapshot
 
 ```bash
-# Visible screen only — cheap, returns a checkpoint token
 SNAP=$(tpctl snapshot --pane "$PANE")
 TOKEN=$(echo "$SNAP" | jq -r .next)
 
-# Or include scrollback for richer context at session start
+# With scrollback:
 tpctl snapshot --pane "$PANE" --history-lines 200 \
   | jq -r '.scrollback_text, .text'
 ```
 
-### 3. Run a command race-free (`text` + `wait --for sentinel`)
+### 3. Race-free command (text + wait sentinel)
 
 ```bash
-# Snapshot first to anchor the wait
 SNAP=$(tpctl snapshot --pane "$PANE")
 TOKEN=$(echo "$SNAP" | jq -r .next)
-
-# Send the command plus a sentinel that carries the exit code
 tpctl text --pane "$PANE" \
   'make test; printf "__DONE__:run1:%d\n" $?' --enter
-
-# Wait for __DONE__:run1:<N>. On success the response includes
-# the full matched literal and exit_code as an integer.
 tpctl wait --pane "$PANE" --after "$TOKEN" \
   --for sentinel --token run1 --timeout-ms 30000
 ```
 
-Why it's race-free: `text` doesn't return until tmux has ack'd the
-send, and `wait --after TOKEN` scans **everything** appended after
-the token — including output that arrived while the wait was being
-registered. Fast output can't slip through.
+Why it's race-free: `text` blocks on tmux ack. `wait --after TOKEN`
+scans every byte after the token, including bytes that landed while
+the wait was registering.
 
-### 4. Drive a TUI (`key` + `wait --for quiescence`)
+### 4. TUI (key + quiescence)
 
 ```bash
 SNAP=$(tpctl snapshot --pane "$PANE")
 TOKEN=$(echo "$SNAP" | jq -r .next)
-
-# Escape, then /pods, then Enter — tmux key names
 tpctl key --pane "$PANE" Escape "/" "pods" Enter
-
-# Wait for the pane to stop producing output for 250ms
-tpctl wait --pane "$PANE" --after "$TOKEN" --for quiescence \
-  --ms 250 --timeout-ms 3000
-
-# Now read the settled screen
+tpctl wait --pane "$PANE" --after "$TOKEN" \
+  --for quiescence --ms 250 --timeout-ms 3000
 tpctl snapshot --pane "$PANE"
 ```
 
-### 5. Match loose patterns (`wait --for regex`)
+### 5. Regex match
 
 ```bash
 SNAP=$(tpctl snapshot --pane "$PANE")
 TOKEN=$(echo "$SNAP" | jq -r .next)
-
 tpctl text --pane "$PANE" "kubectl get pods -w" --enter
-
-# RE2 syntax; no submatches in the response, just the whole match
 tpctl wait --pane "$PANE" --after "$TOKEN" \
   --for regex --pattern '^[a-z0-9-]+\s+Running' --timeout-ms 60000
 ```
 
-### 6. Tail incrementally (`read`)
+### 6. Tail
 
 ```bash
 TOKEN=$(tpctl snapshot --pane "$PANE" | jq -r .next)
@@ -160,145 +133,120 @@ while sleep 1; do
 done
 ```
 
-`read` returns empty `text` when nothing new has appeared; it's
+`read` returns empty text when nothing new has appeared. It is
 always safe to call.
 
-### 7. Run the controller explicitly (`daemon`)
+### 7. Foreground daemon
 
-Agents normally don't need this — the controller auto-spawns on
-first use. But if you want to run it in the foreground for
-debugging or under a supervisor:
+The daemon auto-spawns. Run it in the foreground only to debug:
 
 ```bash
 tpctl daemon --tmux-socket /path/to/tmux.sock
 ```
 
-### Error handling cheat sheet
+### Errors
 
 | Code | Meaning | Recovery |
 |---|---|---|
-| `MISSING_AFTER` | `read`/`wait` called without `--after` | call `snapshot` first |
-| `INVALID_AFTER` | token is wrong pane, evicted (>1 MiB ago), or from an old controller | call `snapshot` again |
-| `PANE_NOT_FOUND` | pane doesn't exist at dispatch time | call `list` |
+| `MISSING_AFTER` | `read`/`wait` without `--after` | snapshot first |
+| `INVALID_AFTER` | wrong pane, evicted, or stale controller | snapshot again |
+| `PANE_NOT_FOUND` | pane gone at dispatch | call `list` |
 | `PANE_CLOSED` | pane vanished during a pending `wait` | pick another pane |
-| `TIMEOUT` | `wait` hit `--timeout-ms` | increase timeout or switch modes |
+| `TIMEOUT` | `wait` hit `--timeout-ms` | longer timeout or a different mode |
 
-Command-level errors are JSON on stdout with a nonzero exit.
-Runtime/controller failures are diagnostics on stderr with a
-nonzero exit. Agents should check stdout first — if it parses as
-JSON with a `code` field, it's a command-level error; otherwise
-check stderr for runtime diagnostics.
+Command-level errors print JSON to stdout. Runtime failures print
+diagnostics to stderr. Both exit nonzero. Parse stdout first; if it
+is not JSON, read stderr.
 
 ## Human usage
 
 ```bash
-# What panes exist?
-tpctl list
+tpctl list                                     # what panes exist
+tpctl snapshot --pane %0 | jq -r .text         # what's on pane %0
 
-# What's on pane %0 right now?
-tpctl snapshot --pane %0 | jq -r .text
-
-# Peek at the last 40 lines of scrollback too
+# Last 40 lines of scrollback and the visible screen:
 tpctl snapshot --pane %0 --history-lines 40 \
   | jq -r '.scrollback_text, .text'
 
-# See what's new since the last peek (save the token between runs)
+# Delta since the last peek:
 TOKEN=$(tpctl snapshot --pane %0 | jq -r .next)
-# ... time passes, pane has produced output ...
+# ... time passes ...
 tpctl read --pane %0 --after "$TOKEN" | jq -r .text
 
-# Type something into a pane without stealing focus
-tpctl text --pane %0 "date" --enter
+tpctl text --pane %0 "date" --enter            # type without stealing focus
+tpctl key --pane %0 Escape ":" "q" Enter       # quit vim
 
-# Press Escape-then-:q to quit a vim pane
-tpctl key --pane %0 Escape ":" "q" Enter
-
-# Block until a pane prints "READY" (e.g. in a shell script that
-# waits for a dev server to come up before running smoke tests)
+# Block until a pane prints READY:
 TOKEN=$(tpctl snapshot --pane %0 | jq -r .next)
 tpctl wait --pane %0 --after "$TOKEN" \
   --for regex --pattern 'READY' --timeout-ms 60000
 
-# Run a long build in a pane and block this script until it finishes,
-# with the build's exit code surfaced as JSON
+# Block until a long build finishes; print its exit code:
 TOKEN=$(tpctl snapshot --pane %0 | jq -r .next)
-tpctl text --pane %0 'make release; printf "__DONE__:build:%d\n" $?' --enter
+tpctl text --pane %0 \
+  'make release; printf "__DONE__:build:%d\n" $?' --enter
 tpctl wait --pane %0 --after "$TOKEN" \
   --for sentinel --token build --timeout-ms 600000 | jq '.exit_code'
 
-# Wait for a busy pane to go idle for a quarter-second before
-# inspecting it
+# Inspect a busy pane once it goes idle:
 TOKEN=$(tpctl snapshot --pane %0 | jq -r .next)
 tpctl wait --pane %0 --after "$TOKEN" \
   --for quiescence --ms 250 --timeout-ms 5000
 tpctl snapshot --pane %0 | jq -r .text
 
-# Start the controller in the foreground (usually unnecessary —
-# auto-spawn handles this — but useful for debugging)
-tpctl daemon
+tpctl daemon                                   # foreground daemon, for debugging
 ```
 
-The JSON output is compact and line-oriented, so it plays well with
-`jq`, `grep`, and shell pipelines.
+Output is one-line JSON. It composes with `jq`, `grep`, and pipes.
 
-## Architecture at a glance
+## Architecture
 
 ```
 cmd/tpctl/             CLI entrypoint
 internal/cli/          argument parsing, stdout/stderr, dispatch
 internal/ipc/          CLI ↔ daemon Unix-socket transport + auto-spawn
 internal/controller/   event loop, request handlers, token issuance
-internal/store/        per-pane ring buffers (1 MiB each) + tokens
-internal/waiter/       sentinel / regex / quiescence matchers (pure)
-internal/textnorm/     §8.3 ANSI/CR/whitespace normalization (pure)
+internal/store/        per-pane ring buffers (1 MiB) + tokens
+internal/waiter/       sentinel / regex / quiescence matchers
+internal/textnorm/     §8.3 ANSI/CR/whitespace normalization
 internal/tmuxctl/      tmux adapter (pipe-pane + list-panes poll)
-internal/domain/       response types, error codes, canonical JSON shapes
-conformance/           standalone conformance kit (own go.mod, stdlib-only)
+internal/domain/       response types, error codes, JSON shapes
+conformance/           standalone conformance kit (own go.mod)
 ```
 
-One controller per tmux server, keyed on the resolved tmux socket
-path. The controller is a single-writer event loop that owns all
-mutable pane state; handlers are thin and pure-ish.
+One controller per tmux server, keyed on the resolved socket path.
+The controller is a single-writer event loop. Handlers are thin.
 
 See [`docs/architecture.md`](docs/architecture.md) for Mermaid
-diagrams of the component layout, request lifecycle, the race-free
-`snapshot → text → wait` timing, and the wait state machine.
+diagrams of the component layout, request lifecycle, race-free
+timing, and the wait state machine.
 
-## Building and testing
+## Testing
 
 ```bash
-go test ./...                              # all tests (impl only)
+go test ./...                              # all impl tests
 go test ./internal/textnorm/...            # fast unit tests
 go test ./cmd/tpctl/ -run TestAcceptance   # §17 acceptance suite
 
-# Conformance kit (lives in its own Go module):
+# Conformance kit (separate module):
 go build -o tpctl ./cmd/tpctl
-cd conformance && go test ./scenarios/ -parallel=4 -args --binary=$PWD/../tpctl
+cd conformance && go test ./scenarios/ -parallel=4 \
+  -args --binary=$PWD/../tpctl
 ```
 
-Tests that need tmux skip themselves if tmux is not on `PATH`. The
-acceptance suite spins up a disposable tmux server on a temp
-socket and drives the built binary through the daemon. The
-conformance kit does the same but is cleanly separated from any
-specific implementation — point it at any tpctl-compatible
-binary, in any language.
+Tmux-backed tests skip when tmux is missing. The conformance kit is
+cleanly separated from the reference implementation. It runs against
+any tpctl-compatible binary in any language.
 
 ## Documentation
 
-- [`docs/specs/tpctl-v1.md`](docs/specs/tpctl-v1.md) — normative
-  v1 specification. This is what implementations must conform to.
-- [`docs/architecture.md`](docs/architecture.md) — component
-  overview, request lifecycle, and race-free wait timing as
-  Mermaid diagrams.
+- [`docs/specs/tpctl-v1.md`](docs/specs/tpctl-v1.md) — the normative v1 spec.
+- [`docs/architecture.md`](docs/architecture.md) — Mermaid diagrams of
+  the components, request flow, and race-free wait timing.
 - [`docs/plan/tpctl-v1-implementation.md`](docs/plan/tpctl-v1-implementation.md)
-  — the slice-by-slice plan that was used to build v1, plus a
-  retrospective and the list of known deviations the code is still
-  catching up on.
-- [`conformance/README.md`](conformance/README.md) — the
-  language-agnostic conformance kit: how an alternative
-  implementer (Go, Rust, Python, anything) runs it against their
-  binary, which spec sections are covered, and how to extend it
-  with new scenarios.
+  — slice-by-slice build plan, retrospective, and known deviations.
+- [`conformance/README.md`](conformance/README.md) — how to run the
+  conformance kit against your implementation.
 
 ## License
 
