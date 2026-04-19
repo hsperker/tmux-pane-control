@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"tpctl-conformance/harness"
+	"github.com/hsperker/tmux-pane-control/conformance/harness"
 )
 
 // C25 — snapshot.text, snapshot.scrollback_text, and read.text are

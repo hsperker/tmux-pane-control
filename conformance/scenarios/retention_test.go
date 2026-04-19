@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"tpctl-conformance/harness"
+	"github.com/hsperker/tmux-pane-control/conformance/harness"
 )
 
 // C10 — the retained output stream is bounded to 1 MiB per pane

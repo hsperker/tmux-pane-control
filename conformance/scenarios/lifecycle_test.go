@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"tpctl-conformance/harness"
+	"github.com/hsperker/tmux-pane-control/conformance/harness"
 )
 
 // C31 — there is exactly one controller per tmux server. We probe

@@ -214,13 +214,27 @@ that range is permissive about unknown names.
   implementation, so slower but conformant implementations still
   pass on modest hardware.
 
-## Extracting the kit
+## Using the kit from another repo
 
-This directory is self-contained — its own `go.mod`, its own
-dependency footprint (Go stdlib only). To ship it as a standalone
-conformance repo, copy `conformance/` somewhere else, rename the
-module in `go.mod`, and update the import path in the `_test.go`
-files. No other wiring.
+The kit is a standalone Go module at
+`github.com/hsperker/tmux-pane-control/conformance`. Another
+implementer has two ways to consume it:
+
+- **`go get`** and drive it from their own test file:
+
+  ```bash
+  go get github.com/hsperker/tmux-pane-control/conformance/scenarios
+  ```
+
+  then write a Go test that imports and runs the scenario
+  functions against their binary. Less common but possible.
+
+- **Copy in tree** — `git subtree add` or `cp -r` the
+  `conformance/` directory into your repo, then run it as
+  `go test ./conformance/scenarios/ -parallel=4 -args --binary=/path/to/your/tpctl`.
+  Simplest for one-off validation.
+
+Either way, the only dependency is Go stdlib plus `tmux` on PATH.
 
 ## Current status
 

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"tpctl-conformance/harness"
+	"github.com/hsperker/tmux-pane-control/conformance/harness"
 )
 
 // C12 — wait requires --timeout-ms (§9.6).
