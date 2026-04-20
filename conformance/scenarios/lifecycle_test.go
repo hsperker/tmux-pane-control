@@ -101,23 +101,13 @@ func TestC34_PaneClosedWhileWaitPending(t *testing.T) {
 	}
 }
 
-// C35 — when a pane is destroyed, its retained stream is dropped
-// immediately; later commands for that %pane_id fail with
-// PANE_NOT_FOUND, not INVALID_AFTER (§11.9 and §7.5 precedence).
-//
-// Detection latency is implementation-defined. To give any
-// poll-based subscription at least two tick intervals to
-// discover-then-forget the pane, we:
-//   - create the pane
-//   - let the subscription discover it (a regex wait on output
-//     from the new pane guarantees it's being tracked)
-//   - then kill it
-//   - then poll up to 5s for the PANE_NOT_FOUND to surface.
+// C35 — when a pane is destroyed, later commands for that
+// %pane_id fail with PANE_NOT_FOUND, not INVALID_AFTER (§11.9 and
+// §7.5 precedence). We ensure the subscription has observed the
+// pane before killing it, then poll up to 5s for the controller
+// to drop it. NOT t.Parallel(): detection latency depends on the
+// poll tick and is sensitive to CPU contention.
 func TestC35_DestroyedPaneSurfacesPaneNotFound(t *testing.T) {
-	// Deliberately NOT t.Parallel(): this scenario's detection
-	// latency depends on the controller's subscription polling
-	// tick, which is sensitive to CPU contention. Keep serial so
-	// a busy parallel batch can't starve the poll loop.
 	e := harness.NewEnv(t)
 
 	pane := e.NewPane(t)
