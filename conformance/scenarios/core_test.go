@@ -91,22 +91,12 @@ func TestC04_SnapshotTextIsRenderedRows(t *testing.T) {
 
 // C05 — read --after never re-returns pre-token output (§9.3).
 //
-// Subtle: pipe-pane subscription is asynchronous, so a Snapshot
-// taken immediately after a send may mint a token at a stream
-// offset BEFORE the send's own bytes have been appended. To
-// synchronize user-time with stream-time we:
-//
-//  1. emit a pre-marker that appears in the OUTPUT but NOT in the
-//     shell's TTY echo of the command (so a regex for the marker
-//     matches the output only, not the command echo);
-//  2. wait for that regex to match — the wait's `next` is at-or-
-//     after the evaluation step that saw the marker, strictly past
-//     the pre-marker bytes in stream terms (spec §9.6);
-//  3. use THAT `next` as the read anchor for the post-marker.
-//
-// The `tr a-z A-Z` trick produces an uppercase marker in the shell
-// output from a lowercase-only command string, guaranteeing the
-// uppercase token only appears once in the stream.
+// Pipe-pane delivery is async, so a fresh snapshot's token can sit
+// at an offset BEFORE the just-emitted bytes. We anchor instead on
+// the `next` of a regex wait that confirms the marker has landed
+// in the stream (spec §9.6 guarantees `next` is at-or-after the
+// matching evaluation step). The `tr` trick keeps the marker out
+// of the TTY-echoed command, so it only appears once, in output.
 func TestC05_ReadAfterNeverReReadsPreTokenOutput(t *testing.T) {
 	t.Parallel()
 	e := harness.NewEnv(t)

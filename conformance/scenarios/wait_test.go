@@ -319,12 +319,8 @@ func TestC21_22_SentinelMatchesAndParsesExitCode(t *testing.T) {
 // C23 — wait --for quiescence treats any appended byte after the
 // checkpoint as activity (§9.6).
 //
-// Drive activity from Go via tmux send-keys (one keystroke at
-// regular intervals) rather than from within the shell. This
-// sidesteps shell-subprocess scheduling jitter that otherwise
-// produced false "idle" gaps under parallel test load — each
-// single-char send-keys is an argv-level tmux call, much more
-// predictable than a backgrounded bash loop.
+// Drive activity via tmux send-keys from Go at fixed intervals;
+// a backgrounded bash loop is too jittery under parallel load.
 func TestC23_QuiescenceCountsAnyAppendAsActivity(t *testing.T) {
 	t.Parallel()
 	e := harness.NewEnv(t)
@@ -372,14 +368,10 @@ func TestC23_QuiescenceCountsAnyAppendAsActivity(t *testing.T) {
 }
 
 // C24 — quiescence may succeed immediately if already satisfied
-// at registration time (§9.6).
-//
-// To separate "immediate" from "waits for the quiet window" in a
-// way that's robust under parallel subprocess contention, we pick
-// a quiet window (--ms 2000) large enough that an implementation
-// that incorrectly waits the full window would be unambiguously
-// slower than one that returns immediately. Pre-sleep for >--ms so
-// the "already satisfied" precondition holds.
+// at registration time (§9.6). We use a large --ms so a broken
+// impl that always waits the full window is clearly slower than
+// one that returns immediately, and pre-sleep past --ms so the
+// "already satisfied" precondition holds.
 func TestC24_QuiescenceImmediatelyWhenIdle(t *testing.T) {
 	t.Parallel()
 	e := harness.NewEnv(t)
