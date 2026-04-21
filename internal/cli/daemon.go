@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -24,7 +25,15 @@ func (a *App) runDaemon(args []string) int {
 	g.register(fs)
 	daemonSocket := fs.String("daemon-socket", "",
 		"override daemon socket path (default: derived from tmux socket)")
+	a.attachSubcommandHelp(fs,
+		"daemon",
+		"Run the controller in the foreground. Normally you don't invoke this directly; auto-spawn starts it on demand.",
+		"tpctl daemon --tmux-socket /tmp/tmux.sock",
+		"§11.3")
 	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	tmuxSocket, err := ipc.ResolveTmuxSocket(g.socketPath, g.socketName)

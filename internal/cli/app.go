@@ -4,6 +4,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,7 +30,8 @@ Usage:
 Global flags:
   --tmux-socket PATH       tmux -S socket path
   --tmux-socket-name NAME  tmux -L socket shortname
-  --help                   Show this help and exit
+  --help                   Show this help and exit (per-subcommand: tpctl <sub> --help)
+  --version                Print version and exit (also: tpctl version)
 
 See docs/specs/tpctl-v1.md for the full specification.
 `
@@ -51,8 +53,12 @@ type App struct {
 // parse them normally. Flags that appear AFTER the subcommand are
 // left in place and handled the same way.
 func (a *App) Run(args []string) int {
-	globals, helpSeen, remaining := extractGlobals(args)
+	globals, helpSeen, versionSeen, remaining := extractGlobals(args)
 
+	if versionSeen {
+		fmt.Fprintln(a.Stdout, versionString())
+		return 0
+	}
 	if helpSeen {
 		fmt.Fprint(a.Stdout, Usage)
 		return 0
@@ -62,11 +68,14 @@ func (a *App) Run(args []string) int {
 		return 2
 	}
 
-	// Explicit "help" / "-h" subcommand (not handled by extractGlobals
-	// because it doesn't start with "--").
+	// Explicit "help" / "version" / "-h" subcommand (not handled by
+	// extractGlobals because they don't start with "--").
 	switch remaining[0] {
 	case "-h", "help":
 		fmt.Fprint(a.Stdout, Usage)
+		return 0
+	case "version":
+		fmt.Fprintln(a.Stdout, versionString())
 		return 0
 	}
 
@@ -99,16 +108,17 @@ func (a *App) Run(args []string) int {
 
 // extractGlobals walks args from the start and pulls out any global
 // flags (--tmux-socket VALUE, --tmux-socket=VALUE, --tmux-socket-name
-// VALUE, --tmux-socket-name=VALUE, --help, -h) that appear before the
-// subcommand. The first argument that is not a recognized global flag
-// ends extraction and is treated as the subcommand; the "--" sentinel
-// also ends extraction (and is preserved in remaining).
+// VALUE, --tmux-socket-name=VALUE, --help, -h, --version) that appear
+// before the subcommand. The first argument that is not a recognized
+// global flag ends extraction and is treated as the subcommand; the
+// "--" sentinel also ends extraction (and is preserved in remaining).
 //
 // Returns:
-//   - globals:   the global-flag tokens in order, ready to reinject
-//   - helpSeen:  true if --help or -h appeared before the subcommand
-//   - remaining: args starting at the subcommand (empty when no subcommand)
-func extractGlobals(args []string) (globals []string, helpSeen bool, remaining []string) {
+//   - globals:     the global-flag tokens in order, ready to reinject
+//   - helpSeen:    true if --help or -h appeared before the subcommand
+//   - versionSeen: true if --version appeared before the subcommand
+//   - remaining:   args starting at the subcommand (empty when no subcommand)
+func extractGlobals(args []string) (globals []string, helpSeen, versionSeen bool, remaining []string) {
 	i := 0
 	for i < len(args) {
 		a := args[i]
@@ -128,12 +138,15 @@ func extractGlobals(args []string) (globals []string, helpSeen bool, remaining [
 			name = "h"
 		default:
 			// Not a flag form we recognize; treat as the subcommand.
-			return globals, helpSeen, args[i:]
+			return globals, helpSeen, versionSeen, args[i:]
 		}
 
 		switch name {
 		case "help", "h":
 			helpSeen = true
+			i++
+		case "version":
+			versionSeen = true
 			i++
 		case "tmux-socket", "tmux-socket-name":
 			globals = append(globals, a)
@@ -153,10 +166,10 @@ func extractGlobals(args []string) (globals []string, helpSeen bool, remaining [
 		default:
 			// Unknown long flag before the subcommand — not a global;
 			// hand off to the subcommand handler, which will reject it.
-			return globals, helpSeen, args[i:]
+			return globals, helpSeen, versionSeen, args[i:]
 		}
 	}
-	return globals, helpSeen, args[i:]
+	return globals, helpSeen, versionSeen, args[i:]
 }
 
 // globalFlags defines flags accepted by every subcommand. Subcommands
@@ -229,6 +242,37 @@ var boolFlagsCommon = map[string]bool{
 	"h":    true,
 }
 
+// attachSubcommandHelp wires a per-subcommand usage message onto
+// fs. When the caller passes --help (or -h), Go's flag package
+// invokes fs.Usage and returns flag.ErrHelp from Parse; the
+// subcommand handler should detect that and return 0.
+//
+// usage is the argument pattern (what follows `tpctl ` in the
+// `Usage:` banner). description is a one-line summary. example is
+// a concrete invocation. specRef is the spec section pointer (e.g.
+// "§9.4"); empty skips it.
+func (a *App) attachSubcommandHelp(fs *flag.FlagSet, usage, description, example, specRef string) {
+	fs.Usage = func() {
+		var b strings.Builder
+		fmt.Fprintf(&b, "Usage: tpctl %s\n\n", usage)
+		if description != "" {
+			fmt.Fprintf(&b, "%s\n\n", description)
+		}
+		fmt.Fprintln(&b, "Flags:")
+		oldOut := fs.Output()
+		fs.SetOutput(&b)
+		fs.PrintDefaults()
+		fs.SetOutput(oldOut)
+		if example != "" {
+			fmt.Fprintf(&b, "\nExample:\n  %s\n", example)
+		}
+		if specRef != "" {
+			fmt.Fprintf(&b, "\nSee docs/specs/tpctl-v1.md %s for the full contract.\n", specRef)
+		}
+		fmt.Fprint(a.Stdout, b.String())
+	}
+}
+
 // validatePaneID rejects empty or non-"%"-prefixed pane identifiers.
 // Spec §5 mandates tmux pane ids as the sole identity.
 func validatePaneID(p string) *domain.ErrorResponse {
@@ -291,7 +335,15 @@ func (a *App) runList(args []string) int {
 	fs.SetOutput(a.Stderr)
 	var g globalFlags
 	g.register(fs)
+	a.attachSubcommandHelp(fs,
+		"list",
+		"Enumerate tmux pane ids on the target server.",
+		"tpctl list",
+		"§9.1")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {
@@ -324,7 +376,15 @@ func (a *App) runSnapshot(args []string) int {
 	pane := registerPaneFlag(fs)
 	historyLines := fs.Int("history-lines", -1,
 		"include N lines of scrollback above the visible screen")
+	a.attachSubcommandHelp(fs,
+		"snapshot --pane %ID [--history-lines N]",
+		"Capture the pane's visible screen and return a checkpoint token.",
+		"tpctl snapshot --pane %42 --history-lines 40",
+		"§9.2")
 	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {
@@ -364,7 +424,15 @@ func (a *App) runRead(args []string) int {
 	g.register(fs)
 	pane := registerPaneFlag(fs)
 	after := fs.String("after", "", "checkpoint token from a prior snapshot or read")
+	a.attachSubcommandHelp(fs,
+		"read --pane %ID --after TOKEN",
+		"Return pane output appended after the given checkpoint token.",
+		"tpctl read --pane %42 --after r_000205",
+		"§9.3")
 	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {
@@ -398,6 +466,47 @@ func (a *App) runRead(args []string) int {
 	return a.relay(resp)
 }
 
+// explainTextPositionalMismatch returns a diagnostic message for
+// `tpctl text` when the caller passed != 1 positional. The common
+// trap is `tpctl text --pane %N -- 'cmd' --enter`: the `--`
+// sentinel makes --enter a positional, the call fails, and the
+// generic "exactly one" error does not hint at the cause. When
+// one of the extra positionals matches a known flag name, spell
+// that out and point the user at the fix.
+func explainTextPositionalMismatch(fs *flag.FlagSet) string {
+	args := fs.Args()
+	var flagsAmongPositionals []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "--") || strings.HasPrefix(a, "-") {
+			flagsAmongPositionals = append(flagsAmongPositionals, a)
+		}
+	}
+	if len(args) == 0 {
+		return "text takes exactly one positional (the payload), got 0"
+	}
+	if len(flagsAmongPositionals) > 0 {
+		return fmt.Sprintf(
+			"text takes exactly one positional, got %d: %s. "+
+				"Flags-looking tokens (%s) after `--` are treated as positional; "+
+				"put `--enter` before `--`, or drop `--` entirely.",
+			len(args), formatQuotedList(args),
+			formatQuotedList(flagsAmongPositionals),
+		)
+	}
+	return fmt.Sprintf(
+		"text takes exactly one positional, got %d: %s",
+		len(args), formatQuotedList(args),
+	)
+}
+
+func formatQuotedList(args []string) string {
+	parts := make([]string, len(args))
+	for i, a := range args {
+		parts[i] = fmt.Sprintf("%q", a)
+	}
+	return strings.Join(parts, ", ")
+}
+
 func (a *App) runText(args []string) int {
 	fs := flag.NewFlagSet("text", flag.ContinueOnError)
 	fs.SetOutput(a.Stderr)
@@ -409,13 +518,21 @@ func (a *App) runText(args []string) int {
 	for k, v := range boolFlagsCommon {
 		bools[k] = v
 	}
+	a.attachSubcommandHelp(fs,
+		"text --pane %ID TEXT [--enter]",
+		"Send literal text to the pane. Exactly one positional payload; --enter appends an Enter keystroke.",
+		`tpctl text --pane %42 "kubectl get pods" --enter`,
+		"§9.4")
 	if err := fs.Parse(reorderArgs(args, bools)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 1 {
 		return a.emitCmdError(&domain.ErrorResponse{
 			Code:    domain.ErrInvalidArgs,
-			Message: "text requires exactly one positional text argument",
+			Message: explainTextPositionalMismatch(fs),
 		})
 	}
 	payload := fs.Arg(0)
@@ -449,7 +566,15 @@ func (a *App) runKey(args []string) int {
 	var g globalFlags
 	g.register(fs)
 	pane := registerPaneFlag(fs)
+	a.attachSubcommandHelp(fs,
+		"key --pane %ID KEY [KEY...]",
+		"Send one or more named keys (tmux send-keys vocabulary) to the pane.",
+		`tpctl key --pane %42 Escape ":" "q" Enter`,
+		"§9.5")
 	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	keys := fs.Args()
@@ -494,7 +619,15 @@ func (a *App) runWait(args []string) int {
 	sentinelToken := fs.String("token", "", "sentinel mode: literal token to expect")
 	pattern := fs.String("pattern", "", "regex mode: RE2 pattern")
 	quietMs := fs.Int("ms", 0, "quiescence mode: required quiet window in ms")
+	a.attachSubcommandHelp(fs,
+		"wait --pane %ID --after TOKEN --for MODE ... --timeout-ms T",
+		"Wait for pane output to match a condition. Modes: sentinel, regex, quiescence.",
+		`tpctl wait --pane %42 --after r_000205 --for sentinel --token run1 --timeout-ms 5000`,
+		"§9.6")
 	if err := fs.Parse(reorderArgs(args, boolFlagsCommon)); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {
