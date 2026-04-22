@@ -362,7 +362,7 @@ func TestSubcommandHelp(t *testing.T) {
 		{"text", "--enter"},
 		{"key", "Send one or more named keys"},
 		{"wait", "sentinel, regex, quiescence"},
-		{"daemon", "foreground"},
+		{"daemon", "--stop"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.sub, func(t *testing.T) {

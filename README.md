@@ -72,7 +72,7 @@ Requires Go 1.24+ and tmux 3.x.
 | `tpctl text --pane %N "..." [--enter]` | empty stdout on success | send text input |
 | `tpctl key --pane %N K1 K2 ...` | empty stdout on success | send named keys |
 | `tpctl wait --pane %N --after TOKEN --for MODE ... --timeout-ms T` | `pane_id`, `next`, `result`, mode-specific fields | block on a condition |
-| `tpctl daemon` | runs the controller in the foreground | debugging |
+| `tpctl daemon [--stop]` | runs the controller; `--stop` shuts it down cleanly | debugging, upgrades |
 
 Target a specific tmux server with `--tmux-socket PATH` or
 `--tmux-socket-name NAME` on any invocation.
@@ -156,6 +156,19 @@ The daemon auto-spawns. Run it in the foreground only to debug:
 tpctl daemon --tmux-socket /path/to/tmux.sock
 ```
 
+To stop the running daemon — e.g. before installing a newer tpctl
+binary — use `--stop`. It asks the daemon to shut down cleanly and
+waits for the socket to disappear:
+
+```bash
+tpctl daemon --stop
+# or, for a specific tmux server:
+tpctl daemon --stop --tmux-socket /path/to/tmux.sock
+```
+
+Exits 0 if no daemon was running or it stopped cleanly; 1 if the
+daemon acked but didn't exit in time (fall back to `pkill -9 tpctl`).
+
 ### Errors
 
 | Code | Meaning | Recovery |
@@ -207,6 +220,7 @@ tpctl wait --pane %0 --after "$TOKEN" \
 tpctl snapshot --pane %0 | jq -r .text
 
 tpctl daemon                                   # foreground daemon, for debugging
+tpctl daemon --stop                            # stop the running daemon
 ```
 
 Output is one-line JSON. It composes with `jq`, `grep`, and pipes.

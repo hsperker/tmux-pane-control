@@ -205,11 +205,18 @@ func (t *paneTracker) read(ctx context.Context, out chan<- PaneOutput, wg *sync.
 	}
 }
 
+// stopCmdTimeout bounds the per-pane `tmux pipe-pane` call during
+// teardown so a hung tmux server cannot keep the daemon alive after
+// its listener has already closed.
+const stopCmdTimeout = 500 * time.Millisecond
+
 func (t *paneTracker) stop(a *Adapter) {
-	// Tell tmux to stop piping this pane. This is best-effort; if
-	// the pane is already gone, tmux returns an error which we
-	// ignore.
-	_ = a.cmd("pipe-pane", "-t", string(t.pane)).Run()
+	// Tell tmux to stop piping this pane. Best-effort: the pane may be
+	// gone, and the tmux server may be unhealthy — in either case we
+	// must not block teardown.
+	ctx, cancel := context.WithTimeout(context.Background(), stopCmdTimeout)
+	defer cancel()
+	_ = a.cmdCtx(ctx, "pipe-pane", "-t", string(t.pane)).Run()
 	t.file.Close()
 }
 

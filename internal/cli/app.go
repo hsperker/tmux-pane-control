@@ -25,7 +25,7 @@ Usage:
   tpctl text --pane %ID TEXT [--enter]
   tpctl key --pane %ID KEY [KEY...]
   tpctl wait --pane %ID --after TOKEN --for MODE ... --timeout-ms N
-  tpctl daemon
+  tpctl daemon [--stop]
 
 Global flags:
   --tmux-socket PATH       tmux -S socket path
