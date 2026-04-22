@@ -332,6 +332,14 @@ Returns pane IDs only.
 
 Captures the current visible pane state and returns a checkpoint token.
 
+### When to use `snapshot` vs `read`
+
+`snapshot` returns the **rendered visible screen** — the same thing the pane would be displaying at the moment of capture, size-bounded by the pane's dimensions. Redraws, cursor overwrites, and spinner frames collapse into their final visible form.
+
+`read` (§9.3) returns the **raw byte stream** appended since a token. Redraw sequences are preserved as bytes.
+
+Pick `snapshot` for rendered views (live TUIs, editors, chat clients, anything that repaints). Pick `read` for incremental logs (shell output, streaming commands). The two are not interchangeable; for an active TUI, `snapshot` after a `wait --for quiescence` is the spec-recommended idiom (see §19).
+
 ### Semantics
 
 - `text` = current visible screen
@@ -388,7 +396,15 @@ Rules:
 
 ## 9.3 `read`
 
-Returns output after an explicit checkpoint token.
+Returns the raw byte stream appended to the pane since an explicit checkpoint token.
+
+### When to use `read` vs `snapshot`
+
+`read` returns the **raw stream**: every byte the pane produced after the token, in order, with ANSI sequences removed per §9.6 match-input rules and CR handling applied per §8.3. Redraw sequences, spinner frames, and cursor-rewrite noise are preserved (minus the escape sequences themselves).
+
+`snapshot` (§9.2) returns the **rendered screen**: the same view the terminal would display, collapsed to the pane's dimensions with overwrites resolved.
+
+Pick `read` for incremental log tail — shell output, streaming command output, anything you'd cat through `tee`. Pick `snapshot` for live TUIs where a rendered view is what you actually want. Calling `read` against a TUI accumulates redraw noise without adding information.
 
 ### Required arguments
 

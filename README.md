@@ -40,8 +40,20 @@ Requires Go 1.24+ and tmux 3.x.
 - **Pane identity.** Panes are tmux `%N` ids, e.g. `%42`. Not
   `session:window.pane`. Use `tpctl list` to discover them.
 - **Checkpoint token.** An opaque string from `snapshot`, `read`, or
-  `wait`. Pass it back via `--after`. Tokens are pane-scoped and die
-  with the controller. Do not parse them.
+  `wait`. Pass it back via `--after` to anchor the next observation.
+  Tokens are pane-scoped and die with the controller. Do not parse
+  them.
+- **Two ways to see the pane.** `snapshot` returns the **rendered
+  screen** (what you'd see if you looked at the pane right now —
+  capped at the pane's size, TUI redraws collapsed). `read --after`
+  returns the **raw byte stream** appended since a token (grows
+  unbounded as output accumulates, nothing collapses). Pick based
+  on what the pane is doing:
+  - **Shell logs / incremental tail** → `read --after`. Byte-accurate,
+    never loses lines to scrolling.
+  - **Live TUI (editor, chat client, top, a coding agent)** → wait
+    for the pane to settle, then `snapshot`. Redraw storms stay out
+    of your context.
 - **Wait modes.**
   - `sentinel` matches `__DONE__:TOKEN:EXITCODE`. The response parses
     the exit code as an integer.
@@ -52,15 +64,15 @@ Requires Go 1.24+ and tmux 3.x.
 
 ## Commands at a glance
 
-| Command | Returns |
-|---|---|
-| `tpctl list` | `{"panes": ["%42", ...]}` |
-| `tpctl snapshot --pane %N [--history-lines K]` | `pane_id`, `next`, `text`, optional `scrollback_text` |
-| `tpctl read --pane %N --after TOKEN` | `pane_id`, `next`, `text` |
-| `tpctl text --pane %N "..." [--enter]` | empty stdout on success |
-| `tpctl key --pane %N K1 K2 ...` | empty stdout on success |
-| `tpctl wait --pane %N --after TOKEN --for MODE ... --timeout-ms T` | `pane_id`, `next`, `result`, mode-specific fields |
-| `tpctl daemon` | runs the controller in the foreground |
+| Command | Returns | Good for |
+|---|---|---|
+| `tpctl list` | `{"panes": ["%42", ...]}` | pane discovery |
+| `tpctl snapshot --pane %N [--history-lines K]` | `pane_id`, `next`, `text`, optional `scrollback_text` | rendered TUI view |
+| `tpctl read --pane %N --after TOKEN` | `pane_id`, `next`, `text` | incremental log tail |
+| `tpctl text --pane %N "..." [--enter]` | empty stdout on success | send text input |
+| `tpctl key --pane %N K1 K2 ...` | empty stdout on success | send named keys |
+| `tpctl wait --pane %N --after TOKEN --for MODE ... --timeout-ms T` | `pane_id`, `next`, `result`, mode-specific fields | block on a condition |
+| `tpctl daemon` | runs the controller in the foreground | debugging |
 
 Target a specific tmux server with `--tmux-socket PATH` or
 `--tmux-socket-name NAME` on any invocation.
