@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -70,6 +71,25 @@ func Wait(ctx context.Context, st *store.Store, req WaitRequest) (*domain.WaitRe
 				PaneID:  string(req.PaneID),
 				Code:    domain.ErrInvalidArgs,
 				Message: "quiescence mode requires a positive --ms",
+			}
+		}
+		// A quiet window that equals or exceeds the overall timeout
+		// can never be satisfied by the wait-and-observe path: the
+		// timeout fires before --ms of idle accumulates. The spec's
+		// "already satisfied at registration" branch is a narrow
+		// edge case that depends on a stale checkpoint token; the
+		// caller should size --timeout-ms accordingly. Reject up
+		// front so the user gets a targeted diagnostic instead of
+		// an opaque TIMEOUT.
+		if req.QuietWindow >= req.Timeout {
+			return nil, &domain.ErrorResponse{
+				PaneID: string(req.PaneID),
+				Code:   domain.ErrInvalidArgs,
+				Message: fmt.Sprintf(
+					"quiescence requires --ms (%dms) < --timeout-ms (%dms)",
+					req.QuietWindow.Milliseconds(),
+					req.Timeout.Milliseconds(),
+				),
 			}
 		}
 	case WaitModeRegex:
