@@ -2,6 +2,7 @@ package tmuxctl
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -42,6 +43,21 @@ func (a *Adapter) cmd(args ...string) *exec.Cmd {
 	}
 	full = append(full, args...)
 	return exec.Command("tmux", full...)
+}
+
+// cmdCtx is cmd with a context that kills the tmux subprocess on
+// cancellation. Used for shutdown paths where a hung tmux (stuck
+// server, frozen FIFO write) must not block daemon teardown.
+func (a *Adapter) cmdCtx(ctx context.Context, args ...string) *exec.Cmd {
+	full := make([]string, 0, len(args)+4)
+	if a.opts.SocketPath != "" {
+		full = append(full, "-S", a.opts.SocketPath)
+	}
+	if a.opts.SocketName != "" {
+		full = append(full, "-L", a.opts.SocketName)
+	}
+	full = append(full, args...)
+	return exec.CommandContext(ctx, "tmux", full...)
 }
 
 // ListPanes runs `tmux list-panes -a -F '#{pane_id}'` and parses the
