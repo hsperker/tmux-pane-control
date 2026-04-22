@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +23,14 @@ import (
 // process around (see `t.stop` timeouts in tmuxctl/subscribe_unix.go
 // for the expected-case bound; this deadline is the backstop).
 const shutdownDeadline = 2 * time.Second
+
+// hardExitDeadline is a belt-and-suspenders timer armed the instant
+// a shutdown is requested (SIGINT/SIGTERM, tmux server loss, or
+// OpShutdown). If the daemon has not exited on its own by then,
+// os.Exit(1) forces termination. This guarantees a bounded worst
+// case independent of any teardown-path bug that might keep the
+// process resident after the listener has already been released.
+const hardExitDeadline = 3 * time.Second
 
 // runDaemon is the `tpctl daemon` subcommand (spec §11.3). It
 // resolves the tmux socket, derives the daemon socket (unless
@@ -87,10 +96,27 @@ func (a *App) runDaemon(args []string) int {
 		return 1
 	}
 
+	// requestShutdown is the single shutdown entry point. It arms the
+	// hard-exit timer (so the process is guaranteed to die within
+	// hardExitDeadline even if teardown wedges) and then cancels the
+	// daemon ctx. Idempotent: time.AfterFunc + Once lets callers hit
+	// this from OpShutdown, signals, and tmux server loss without
+	// racing multiple hard-exit timers.
+	var shutdownOnce sync.Once
+	requestShutdown := func() {
+		shutdownOnce.Do(func() {
+			time.AfterFunc(hardExitDeadline, func() {
+				fmt.Fprintln(a.Stderr, "tpctl daemon: hard exit deadline; terminating")
+				os.Exit(1)
+			})
+		})
+		cancel()
+	}
+
 	srv := &ipc.Server{
 		Listener:   ln,
 		Controller: ctrl,
-		Shutdown:   cancel,
+		Shutdown:   requestShutdown,
 	}
 
 	// Propagate SIGINT/SIGTERM and controller-observed tmux server
@@ -105,7 +131,7 @@ func (a *App) runDaemon(args []string) int {
 			serverLost = true
 			fmt.Fprintln(a.Stderr, "tpctl daemon: tmux server connection lost; exiting")
 		}
-		cancel()
+		requestShutdown()
 	}()
 
 	if err := srv.Serve(ctx); err != nil && err != ipc.ErrServerClosed {
@@ -148,39 +174,68 @@ func stopWithDeadline(ctrl *controller.Controller, stderr io.Writer) {
 // takes.
 const daemonStopAckTimeout = 2 * time.Second
 
-// daemonStopExitTimeout is how long to wait for the daemon process
-// to close its listener after acking shutdown. Controller teardown
-// is itself bounded by shutdownDeadline; this gives it headroom.
-const daemonStopExitTimeout = 5 * time.Second
+// daemonStopExitTimeout is how long to wait for the daemon to
+// release its socket after acking shutdown. Slightly longer than
+// hardExitDeadline so a daemon that needs the hard-exit backstop
+// still reports "stopped cleanly" rather than a false negative.
+const daemonStopExitTimeout = hardExitDeadline + 2*time.Second
 
 // runDaemonStop asks the daemon at sockPath to shut down cleanly and
-// waits for it to actually exit. Exit codes:
+// waits for its process to exit. Exit codes:
 //
-//	0 — daemon was not running, or stopped cleanly.
-//	1 — ack received but daemon did not close its listener in time.
-//	    The caller should escalate to SIGKILL (`pkill -9 tpctl`).
+//	0 — daemon was not running, or stopped cleanly (socket gone AND
+//	    process exited).
+//	1 — the daemon acked OpShutdown but the socket or process did
+//	    not disappear within daemonStopExitTimeout. Caller should
+//	    escalate to SIGKILL (`pkill -9 tpctl`).
+//
+// Checking the socket alone is not enough: a daemon can unlink its
+// socket during shutdown while the process itself stays resident on
+// a hung teardown path. The OpShutdown response carries the daemon
+// PID so we can check process liveness via kill(pid, 0) too.
 func (a *App) runDaemonStop(sockPath string) int {
 	client := ipc.NewClient(sockPath)
 	if err := client.Ping(); err != nil {
 		fmt.Fprintln(a.Stderr, "tpctl daemon --stop: no daemon running")
 		return 0
 	}
-	if _, err := client.Call(&ipc.Request{Op: ipc.OpShutdown}, daemonStopAckTimeout); err != nil {
+
+	resp, err := client.Call(&ipc.Request{Op: ipc.OpShutdown}, daemonStopAckTimeout)
+	if err != nil {
 		fmt.Fprintf(a.Stderr, "tpctl daemon --stop: shutdown request failed: %v\n", err)
 		return 1
 	}
-	// Poll until the socket stops accepting connections — that's the
-	// signal the daemon has torn down its listener (and normally its
-	// process along with it).
+	pid := resp.Pid
+
 	deadline := time.Now().Add(daemonStopExitTimeout)
+	sockGone := false
+	processGone := pid <= 0 // no PID reported → fall back to socket-only
 	for time.Now().Before(deadline) {
-		if err := client.Ping(); err != nil {
+		if !sockGone {
+			if err := client.Ping(); err != nil {
+				sockGone = true
+			}
+		}
+		if !processGone && pid > 0 {
+			if err := syscall.Kill(pid, 0); err != nil {
+				processGone = true
+			}
+		}
+		if sockGone && processGone {
 			return 0
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	fmt.Fprintf(a.Stderr,
-		"tpctl daemon --stop: daemon still reachable after %s; send SIGKILL if it is stuck\n",
-		daemonStopExitTimeout)
+
+	switch {
+	case !sockGone:
+		fmt.Fprintf(a.Stderr,
+			"tpctl daemon --stop: daemon still reachable on socket after %s; send SIGKILL if it is stuck\n",
+			daemonStopExitTimeout)
+	case !processGone:
+		fmt.Fprintf(a.Stderr,
+			"tpctl daemon --stop: socket released but daemon PID %d still alive after %s; send SIGKILL (`kill -9 %d`)\n",
+			pid, daemonStopExitTimeout, pid)
+	}
 	return 1
 }
