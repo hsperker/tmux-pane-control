@@ -1,4 +1,4 @@
-//go:build unix
+//go:build linux
 
 package main
 
@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -36,7 +37,11 @@ func TestE2E_DaemonStop_NoDaemon(t *testing.T) {
 }
 
 // TestE2E_DaemonStop_StopsRunningDaemon — auto-spawn a daemon,
-// then `tpctl daemon --stop` and verify the socket is gone.
+// then `tpctl daemon --stop` and verify the socket is gone AND the
+// daemon process has exited. The socket check alone is not enough:
+// the daemon can unlink its socket during shutdown while the process
+// stays resident (see `t.stop` / `ctrl.Stop` paths that used to hang
+// on pipe-pane during teardown).
 func TestE2E_DaemonStop_StopsRunningDaemon(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
@@ -72,6 +77,12 @@ func TestE2E_DaemonStop_StopsRunningDaemon(t *testing.T) {
 		t.Fatalf("daemon not reachable after auto-spawn: %v", err)
 	}
 
+	// Record the daemon's PID BEFORE stopping. If we only asserted
+	// on socket disappearance, a "unlink socket but leak process"
+	// bug would silently pass. Linux-only for the /proc scrape;
+	// the test as a whole is unix-gated.
+	daemonPID := findDaemonPIDForSocket(t, bin, tmuxSock)
+
 	// Stop it.
 	cmd = exec.Command(bin, "daemon", "--stop", "--tmux-socket", tmuxSock)
 	cmd.Env = env
@@ -80,14 +91,30 @@ func TestE2E_DaemonStop_StopsRunningDaemon(t *testing.T) {
 		t.Fatalf("daemon --stop: %v: %s", err, out)
 	}
 
-	// Give the daemon a moment to release the socket (runDaemonStop
-	// already polls up to 5s; in practice clean shutdown is ~10ms).
+	// Socket must go away.
+	sockGone := false
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := client.Ping(); err != nil {
-			return
+			sockGone = true
+			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
-	t.Fatalf("daemon still reachable after --stop returned")
+	if !sockGone {
+		t.Fatalf("daemon still reachable on socket after --stop returned")
+	}
+
+	// Process must exit. Give it enough budget to cover the 2s
+	// stopWithDeadline backstop in cli/daemon.go plus kernel delivery.
+	processDeadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(processDeadline) {
+		if err := syscall.Kill(daemonPID, 0); err != nil {
+			// ESRCH or permission denied (shouldn't be the latter
+			// within our own uid) — either way, process is gone.
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("daemon PID %d still alive 4s after --stop (socket was removed, process leaked)", daemonPID)
 }

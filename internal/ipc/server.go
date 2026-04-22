@@ -112,7 +112,7 @@ func (s *Server) handle(ctx context.Context, conn net.Conn) {
 		return
 	}
 	if req.Op == OpShutdown {
-		writeResponse(conn, &Response{OK: true})
+		writeResponse(conn, &Response{OK: true, Pid: os.Getpid()})
 		if s.Shutdown != nil {
 			go s.Shutdown()
 		}

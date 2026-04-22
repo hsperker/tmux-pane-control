@@ -57,9 +57,12 @@ type Request struct {
 // JSON payload (list/snapshot/read/wait) or Body is empty for
 // text/key. On command-level failure Error is set. On runtime failure
 // Runtime carries a diagnostic that the client surfaces on stderr.
+// Pid is populated on OpShutdown so the caller can verify the
+// specific process it asked to exit has actually gone away.
 type Response struct {
 	OK      bool                  `json:"ok"`
 	Body    json.RawMessage       `json:"body,omitempty"`
 	Error   *domain.ErrorResponse `json:"error,omitempty"`
 	Runtime string                `json:"runtime,omitempty"`
+	Pid     int                   `json:"pid,omitempty"`
 }
