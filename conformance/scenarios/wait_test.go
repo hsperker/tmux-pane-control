@@ -34,6 +34,45 @@ func TestC12_WaitRequiresTimeoutMs(t *testing.T) {
 	}
 }
 
+// TestExt_QuiescenceWindowGEQTimeoutRejected — a conformance
+// probe for the post-v0.2.0 paper-cut: a quiescence --ms value
+// equal to or greater than --timeout-ms can never be satisfied
+// by wait-and-observe, so implementations must reject the
+// combination with INVALID_ARGS instead of silently timing out.
+// Timing assert guards against a regression that lets the test
+// pass via the slower TIMEOUT path.
+func TestExt_QuiescenceWindowGEQTimeoutRejected(t *testing.T) {
+	t.Parallel()
+	e := harness.NewEnv(t)
+	pane := e.FirstPane(t)
+	snap := e.Snapshot(t, pane)
+
+	start := time.Now()
+	r := e.Run("wait",
+		"--pane", pane,
+		"--after", snap.Next,
+		"--for", "quiescence",
+		"--ms", "5000",
+		"--timeout-ms", "2000",
+	)
+	elapsed := time.Since(start)
+
+	if r.Code == 0 {
+		t.Fatalf("want nonzero exit; stdout=%q", r.Stdout)
+	}
+	err := r.MustError(t)
+	if err.Code != "INVALID_ARGS" {
+		t.Fatalf("code = %q, want INVALID_ARGS", err.Code)
+	}
+	// Must reject before even approaching --timeout-ms. Subprocess
+	// + daemon roundtrip on a busy parallel run can take ~500ms;
+	// 1s catches any regression where validation is removed and
+	// the test starts passing via TIMEOUT.
+	if elapsed > time.Second {
+		t.Fatalf("rejection took %v; must reject early, not after timeout", elapsed)
+	}
+}
+
 // C13 — wait supports exactly sentinel, regex, quiescence (§9.6).
 // An unknown mode must be rejected before execution.
 func TestC13_WaitSupportsExactlyThreeModes(t *testing.T) {

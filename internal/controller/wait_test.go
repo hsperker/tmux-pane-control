@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -252,6 +253,57 @@ func TestWait_Regex_NoAnchorNoDotall(t *testing.T) {
 	}
 	if *resp.Matched != "a\nb" {
 		t.Fatalf("matched = %q", *resp.Matched)
+	}
+}
+
+// TestWait_Quiescence_RejectsWindowGEQTimeout pins the
+// argument-validation gap reported as a post-v0.2.0 bug: a
+// --ms value that is >= --timeout-ms can never succeed by the
+// normal wait-and-observe path (the timeout fires before --ms
+// of idle accumulates), so the wait should fail immediately
+// with INVALID_ARGS instead of running out the clock and
+// returning an opaque TIMEOUT.
+//
+// The timing assertion (<50ms) guards against a future
+// regression where the validation gets removed and this test
+// still "passes" via the TIMEOUT path.
+func TestWait_Quiescence_RejectsWindowGEQTimeout(t *testing.T) {
+	s := store.New(1024)
+	tok := s.NewToken("%42")
+
+	cases := []struct {
+		name         string
+		quiet, total time.Duration
+	}{
+		{"greater", 5 * time.Second, 2 * time.Second},
+		{"equal", time.Second, time.Second},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			start := time.Now()
+			_, err := Wait(context.Background(), s, WaitRequest{
+				PaneID: "%42", After: tok, Timeout: tc.total,
+				Mode: WaitModeQuiescence, QuietWindow: tc.quiet,
+			})
+			elapsed := time.Since(start)
+			var cerr *domain.ErrorResponse
+			if !errors.As(err, &cerr) {
+				t.Fatalf("want *ErrorResponse, got %T", err)
+			}
+			if cerr.Code != domain.ErrInvalidArgs {
+				t.Fatalf("code = %q, want INVALID_ARGS", cerr.Code)
+			}
+			if elapsed > 50*time.Millisecond {
+				t.Fatalf("rejection took %v; must not run the clock", elapsed)
+			}
+			// Message must name both values so the user can spot
+			// the mistake without reading the spec.
+			for _, needle := range []string{"--ms", "--timeout-ms"} {
+				if !strings.Contains(cerr.Message, needle) {
+					t.Errorf("message missing %q: %q", needle, cerr.Message)
+				}
+			}
+		})
 	}
 }
 
