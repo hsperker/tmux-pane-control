@@ -298,6 +298,8 @@ any tpctl-compatible binary in any language.
 - [`docs/specs/tpctl-v1.md`](docs/specs/tpctl-v1.md) — the normative v1 spec.
 - [`docs/architecture.md`](docs/architecture.md) — Mermaid diagrams of
   the components, request flow, and race-free wait timing.
+- [`docs/walkthrough.md`](docs/walkthrough.md) — outside-in tour of the
+  codebase, package by package, with live code excerpts.
 - [`docs/plan/tpctl-v1-implementation.md`](docs/plan/tpctl-v1-implementation.md)
   — slice-by-slice build plan, retrospective, and known deviations.
 - [`conformance/README.md`](conformance/README.md) — how to run the
