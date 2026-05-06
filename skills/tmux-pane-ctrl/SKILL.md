@@ -97,6 +97,8 @@ Read the JSON from the tool output and remember `next` as `TOKEN`. After each su
 
 Tokens are opaque, pane-scoped, and valid until the tpctl controller restarts or the pane's 1 MiB retention buffer evicts the checkpoint. If a call returns `INVALID_AFTER`, re-seed with a fresh `tpctl snapshot` and continue.
 
+**Shell parsing tip.** When extracting fields from a captured tpctl response in bash, prefer `jq <<< "$VAR"` (here-string) or `printf '%s' "$VAR" | jq` over `echo "$VAR" | jq`. Some bash environments interpret `\n` inside the captured JSON as a real newline, corrupting the JSON before jq sees it. The here-string form passes bytes through verbatim. For one-shot extraction, pipe directly: `TOKEN=$(tpctl snapshot --pane "$PANE" | jq -r .next)`.
+
 ## Sending input
 
 Literal text with no shell splitting or expansion:
@@ -167,6 +169,8 @@ tpctl "${TPCTL_FLAGS[@]}" wait --pane "$PANE" --after "$TOKEN" \
 
 Patterns are RE2 (Go regexp flavor). No backreferences or lookarounds.
 
+**Word boundaries on redraw streams.** Programs that paint with cursor positioning (`watch`, `top`, full-screen TUIs) emit no real `\n` between successive frames. After ANSI/CR strip, the stream concatenates frame after frame, so a value that looks standalone in the rendered grid is bracketed by neighboring frames' bytes in the stream. Word-boundary anchors (`\b…\b`) can therefore fail unexpectedly. For redraw programs prefer simple substring patterns, or fall back to the snapshot-and-parse pattern under "Observation-driven decisions" above.
+
 ### Quiescence (for chat TUIs and LLM agents)
 
 When no stable prompt exists, wait until output has been silent for a window.
@@ -184,6 +188,75 @@ Every `wait` returns a new `next`. To collect what arrived, pick the read primit
 - `tpctl snapshot --pane "$PANE"` returns tmux's rendered view of the current pane contents. Right for chat TUIs and any pane whose output involves cursor rewrites, spinners, or status-bar redraws. tmux has already collapsed those to the final grid state, so a single snapshot of the settled pane is both cheaper and cleaner than tailing the byte stream.
 
 Rule of thumb: if the pane would look readable in `tmux capture-pane -p`, use `snapshot`. If the pane is producing append-only log output, use `read --after`.
+
+**`snapshot` is lossy on transient content.** The rendered screen reflects only what is *currently* visible: anything cleared (`clear`, Ctrl-L), scrolled off, or overwritten before your snapshot lands is gone. For "describe what just happened" on a shell pane, tail with `read --after`; the byte stream is lossless within the 1 MiB retention window. Reserve `snapshot` for panes whose redraws (chat TUIs, nvim, top, spinners) would otherwise dominate.
+
+## Passive observation (live tail)
+
+To follow along on a pane the user is driving — describe what they type, capture transient output, narrate idle vs active — combine `wait --for regex '(?s).'` (block on activity) with `read --after` (drain bytes). Lossless within the retention window, so a `clear` between bursts does not erase what was on screen.
+
+The springy version: run the loop as a backgrounded task whose stdout lines stream back to the agent as events. In Claude Code that is the `Monitor` tool with `persistent: true`; other harnesses provide equivalent primitives. Each burst arrives as its own notification, so the conversation reflects pane activity in near-real-time.
+
+```bash
+reseed() { tpctl "${TPCTL_FLAGS[@]}" snapshot --pane "$PANE" 2>/dev/null | jq -r .next; }
+TOKEN=$(reseed)
+while true; do
+  if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then sleep 1; TOKEN=$(reseed); continue; fi
+  W=$(tpctl "${TPCTL_FLAGS[@]}" wait --pane "$PANE" --after "$TOKEN" \
+        --for regex --pattern '(?s).' --timeout-ms 600000)
+  if jq -e 'has("code")' <<< "$W" >/dev/null 2>&1; then
+    case "$(jq -r .code <<< "$W")" in
+      INVALID_AFTER|PANE_NOT_FOUND) TOKEN=$(reseed) ;;   # buffer evicted or pane gone
+      *) : ;;                                            # TIMEOUT etc.
+    esac
+    continue
+  fi
+  sleep 0.5                                              # debounce: let the burst accumulate
+  D=$(tpctl "${TPCTL_FLAGS[@]}" read --pane "$PANE" --after "$TOKEN")
+  TOKEN=$(jq -r .next <<< "$D")
+  TEXT=$(jq -r .text <<< "$D")
+  [ -z "$TEXT" ] && continue
+  # Flatten internal newlines so each burst is one notification line.
+  printf '[%s] %s\n' "$(date +%H:%M:%S)" \
+    "$(printf '%s' "$TEXT" | tr '\n' '|')"
+done
+```
+
+Two non-obvious bits of robustness:
+
+- **`INVALID_AFTER` recovery via `reseed`.** A long-running pane (especially one running a redraw-heavy TUI like nvim) can rotate 1 MiB through its ring buffer in minutes; the seed token gets evicted and every subsequent `wait` returns `INVALID_AFTER`. Without the case branch the loop spin-fails silently. Re-seed by snapshotting fresh.
+- **`sleep 0.5` debounce.** Fixed-cadence streamers (`ping`, `top`, `watch -n 1`) push close to async-event-channel rate limits if every byte triggers an emit. The half-second nap lets multiple bytes coalesce into one drained burst.
+
+Without an async-event facility, run the same loop synchronously inside one tool call with a fixed deadline; you trade real-time feedback for a single batch dump at the end.
+
+Caveats:
+
+- Shell autosuggest tooling (fish, zsh) redraws the prompt line on every keystroke, so the byte stream looks noisy. The user's actual command is in there interleaved with the autosuggest buffer; skim past it.
+- For chat TUIs and other redraw-heavy programs, prefer `snapshot` after a short quiescence (see "Chat style TUIs" below) so tmux collapses the redraws for free.
+- Keep the regex pattern broad — `(?s).` matches any byte. The point is to surface whatever the user does, not to grep for known patterns.
+- Periodic-output programs (`ping`, `watch -n 1`, chatty `tail -f`) can still trip an async-event channel's rate limit even with the debounce. If the harness terminates the monitor with a "too much output" warning, increase the `sleep`, or switch to the snapshot-with-quiescence loop documented under "Chat style TUIs" below.
+
+## Observation-driven decisions
+
+When the exit condition is something tpctl's matchers don't express cleanly — multi-field correlation, computed thresholds, semantic checks — drive the loop yourself: snapshot in a tight cadence, parse the rendered text, decide, act. Cost is more bytes over the wire (one snapshot per poll); benefit is arbitrary decision logic in agent code rather than a single regex.
+
+Example: wait for `watch -n 1 'date +%S'` to display `42`, then send Ctrl-C.
+
+```bash
+tpctl "${TPCTL_FLAGS[@]}" text --pane "$PANE" 'watch -n 1 "date +%S"' --enter
+DEADLINE=$(($(date +%s) + 90))
+while [ $(date +%s) -lt $DEADLINE ]; do
+  sleep 0.4
+  TEXT=$(tpctl "${TPCTL_FLAGS[@]}" snapshot --pane "$PANE" | jq -r .text)
+  CUR=$(printf '%s' "$TEXT" | grep -E '^[0-9]{2}$' | tail -1)
+  [ "$CUR" = "42" ] && break
+done
+tpctl "${TPCTL_FLAGS[@]}" key --pane "$PANE" C-c
+```
+
+Polling-cadence rule of thumb: keep it slightly faster than the source's update rate so each value appears in at least two consecutive snapshots. Sub-tick polling (e.g. 0.25s on a 1s tick) guarantees catching every value at the cost of more snapshots; 0.4s on 1s ticks usually catches them all but drops the occasional value as cadence drifts.
+
+This pattern is also the right answer when wait's regex matchers behave unexpectedly on redraw streams (see the "Word boundaries" caveat under Regex above) — `snapshot` returns the rendered grid, free of cursor-positioning artifacts.
 
 ## Interactive tool recipes
 
@@ -208,6 +281,27 @@ tpctl "${TPCTL_FLAGS[@]}" wait --pane "$PANE" --after "$TOKEN" \
 
 **Other TTY apps** (ipdb, psql, mysql, node, bash): same shape. Start program, wait for its prompt regex, send literal text with `--enter`, read or wait on the response.
 
+**vim / nvim** has two driving-specific gotchas:
+
+1. **Auto-completion plugins (e.g. `blink.cmp`, `nvim-cmp`) consume `Enter`.** If a popup is open when you send `tpctl key Enter`, the keystroke accepts the current suggestion or expands a snippet — your next "newline" turns into a literal completion replacement and the buffer's content is not what you typed. Workaround: enter `:set paste` before insert mode, send the whole multi-line content as one `tpctl text` payload with embedded newlines (bash `$'...\n...'`), then `:set nopaste`. Paste mode disables auto-indent, auto-pairs, and completion engines for the duration of the next insert.
+2. **Mid-edit `tail -N` of the snapshot is misleading.** A small file's content sits at the top of the buffer; `~` empty-line markers fill the rest of the rendered grid. Use `head -N` or the full snapshot when verifying state mid-edit.
+
+```bash
+tpctl "${TPCTL_FLAGS[@]}" text --pane "$PANE" 'nvim file.md' --enter
+sleep 1
+tpctl "${TPCTL_FLAGS[@]}" key --pane "$PANE" Escape          # ensure normal mode
+tpctl "${TPCTL_FLAGS[@]}" text --pane "$PANE" ':set paste'
+tpctl "${TPCTL_FLAGS[@]}" key --pane "$PANE" Enter
+tpctl "${TPCTL_FLAGS[@]}" key --pane "$PANE" G
+tpctl "${TPCTL_FLAGS[@]}" key --pane "$PANE" o
+tpctl "${TPCTL_FLAGS[@]}" text --pane "$PANE" $'first line\nsecond line\nthird line'
+tpctl "${TPCTL_FLAGS[@]}" key --pane "$PANE" Escape
+tpctl "${TPCTL_FLAGS[@]}" text --pane "$PANE" ':set nopaste'
+tpctl "${TPCTL_FLAGS[@]}" key --pane "$PANE" Enter
+tpctl "${TPCTL_FLAGS[@]}" text --pane "$PANE" ':wq'
+tpctl "${TPCTL_FLAGS[@]}" key --pane "$PANE" Enter
+```
+
 ## Chat style TUIs (LLM-driven agent CLIs, etc.)
 
 Chat TUIs break the REPL recipe in three ways:
@@ -220,7 +314,37 @@ Input is queued during generation, so a follow-up message sent while a response 
 
 ### Running a quiescence wait in the background
 
-For long generation across many turns, run the `wait` as a background task in your harness: anything that lets a long-running shell command notify on completion rather than block the conversation while it polls. When the wait fires, call `tpctl snapshot --pane "$PANE"` to read the rendered state. Do not use `read --after` for chat TUIs: it returns the raw byte stream including every spinner frame and status-bar redraw, which tmux has already collapsed to its final grid state inside `snapshot`. `read --after` is for log-style panes where output is append-only.
+For long generation across many turns, run the `wait` as a background task in your harness so each stabilization becomes a notification rather than blocking the conversation. In Claude Code that is the `Monitor` tool with `persistent: true`; other harnesses provide equivalent primitives. The pattern: wait for any byte (`regex '(?s).'`), then wait for ~6s of quiescence to let streaming settle, then snapshot the rendered state and dedupe by hash. One settled frame per response cycle, not per token.
+
+```bash
+reseed() { tpctl "${TPCTL_FLAGS[@]}" snapshot --pane "$PANE" 2>/dev/null | jq -r .next; }
+TOKEN=$(reseed)
+LAST_HASH=""
+while true; do
+  if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then sleep 1; TOKEN=$(reseed); continue; fi
+  W=$(tpctl "${TPCTL_FLAGS[@]}" wait --pane "$PANE" --after "$TOKEN" \
+        --for regex --pattern '(?s).' --timeout-ms 600000)
+  if jq -e 'has("code")' <<< "$W" >/dev/null 2>&1; then
+    case "$(jq -r .code <<< "$W")" in
+      INVALID_AFTER|PANE_NOT_FOUND) TOKEN=$(reseed) ;;
+      *) : ;;
+    esac
+    continue
+  fi
+  T2=$(jq -r .next <<< "$W")
+  tpctl "${TPCTL_FLAGS[@]}" wait --pane "$PANE" --after "$T2" \
+    --for quiescence --ms 6000 --timeout-ms 600000 >/dev/null 2>&1
+  SNAP=$(tpctl "${TPCTL_FLAGS[@]}" snapshot --pane "$PANE")
+  TOKEN=$(jq -r .next <<< "$SNAP")
+  TEXT=$(jq -r .text <<< "$SNAP")
+  HASH=$(printf '%s' "$TEXT" | shasum -a 1 | cut -c1-12)
+  [ "$HASH" = "$LAST_HASH" ] && continue
+  LAST_HASH="$HASH"
+  printf '\n[%s settled]\n%s\n' "$(date +%H:%M:%S)" "$(printf '%s' "$TEXT" | tail -20)"
+done
+```
+
+Do not use `read --after` for chat TUIs: it returns the raw byte stream including every spinner frame and status-bar redraw, which tmux has already collapsed to its final grid state inside `snapshot`. `read --after` is for log-style panes where output is append-only.
 
 ## Errors
 
