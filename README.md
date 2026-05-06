@@ -79,6 +79,13 @@ Target a specific tmux server with `--tmux-socket PATH` or
 
 ## Agent usage
 
+For LLM agents that load skills, this repo bundles an
+[Agent Skill](https://agentskills.io) at
+[`skills/tmux-pane-ctrl/`](skills/tmux-pane-ctrl/SKILL.md). Drop
+the directory under your harness's skill load path to pick up the
+patterns below; the bash/jq examples remain the fallback for
+non-skill agents.
+
 ### 1. Discover panes
 
 ```bash
@@ -304,6 +311,9 @@ any tpctl-compatible binary in any language.
   — slice-by-slice build plan, retrospective, and known deviations.
 - [`conformance/README.md`](conformance/README.md) — how to run the
   conformance kit against your implementation.
+- [`skills/tmux-pane-ctrl/SKILL.md`](skills/tmux-pane-ctrl/SKILL.md)
+  — bundled Agent Skill (agentskills.io format) packaging the
+  agent-usage patterns as a portable instruction file.
 
 ## License
 
