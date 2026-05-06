@@ -309,6 +309,7 @@ Chat TUIs break the REPL recipe in three ways:
 - **No deterministic prompt during generation.** The input box is a single `❯` redrawn in place with a mutating spinner. Regex has nothing stable; use `--for quiescence`.
 - **Newlines submit.** Any newline inside the `text` positional is sent as Enter and submits a partial message. Flatten content that spans paragraphs into one long line.
 - **Escape cancels generation.** Use `tpctl key --pane "$PANE" Escape` (not `C-c`) to stop a response while keeping the session alive. `C-c` usually exits the program entirely.
+- **Multi-line pastes show as opaque placeholders during composition.** Some chat TUIs (Claude Code in particular) render a `[Pasted text #N +M lines]` token in the input field instead of the actual content while the user is still composing; the content appears in the chat scroll only after submission. A `tpctl snapshot` taken mid-compose can describe the placeholder but not the bytes it stands for; expect to learn the paste content only on the next settled frame post-submit.
 
 Input is queued during generation, so a follow-up message sent while a response is still streaming will be processed on the next turn.
 
@@ -337,7 +338,11 @@ while true; do
   SNAP=$(tpctl "${TPCTL_FLAGS[@]}" snapshot --pane "$PANE")
   TOKEN=$(jq -r .next <<< "$SNAP")
   TEXT=$(jq -r .text <<< "$SNAP")
-  HASH=$(printf '%s' "$TEXT" | shasum -a 1 | cut -c1-12)
+  # Strip mutating status-bar lines (e.g. "● Stewing… (3m · ↓ 12k tokens)")
+  # and the "※ recap:" block before hashing, so dedup compares content only.
+  HASH=$(printf '%s' "$TEXT" \
+    | awk '/^●/ {next} /^※ recap:/,/disable recaps in/ {next} {print}' \
+    | shasum -a 1 | cut -c1-12)
   [ "$HASH" = "$LAST_HASH" ] && continue
   LAST_HASH="$HASH"
   printf '\n[%s settled]\n%s\n' "$(date +%H:%M:%S)" "$(printf '%s' "$TEXT" | tail -20)"
